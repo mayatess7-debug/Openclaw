@@ -90,6 +90,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/bash-tools.exec-task-lifecycle.test.ts",
   "src/agents/bash-tools.exec-task-wiring.test.ts",
   "src/agents/bash-tools.exec.approval-id.test.ts",
+  "src/agents/bash-tools.exec.egress.integration.test.ts",
   "src/agents/bash-tools.exec.egress-closure.test.ts",
   "src/agents/bash-tools.exec.egress-lifecycle.test.ts",
   "src/agents/bash-tools.exec.path.test.ts",
