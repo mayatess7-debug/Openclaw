@@ -143,9 +143,7 @@ export class ChatSessionRailState {
    */
   collapse(): void {
     this.displayPreference = "pill";
-    this.transientExpanded = false;
-    this.autoExpandedRunId = null;
-    this.manualOpen = false;
+    this.resetTransientState();
     storeChatObserverDisplayPreference("pill");
   }
 
@@ -169,18 +167,6 @@ export class ChatSessionRailState {
   }
 }
 
-function healthLabel(health: SessionObserverDigest["health"]): string {
-  return t(`chat.rail.health.${health}` as Parameters<typeof t>[0]);
-}
-
-function prStateLabel(pullRequestState: ControlUiSessionPullRequest["state"]): string {
-  return t(
-    `chat.pullRequests.${pullRequestState === "draft" ? "draft" : pullRequestState}` as Parameters<
-      typeof t
-    >[0],
-  );
-}
-
 function checksSummary(pullRequest: ControlUiSessionPullRequest): string | null {
   const checks = pullRequest.checks;
   if (!checks) {
@@ -202,6 +188,7 @@ const COMPANION_HINT_KEYS = {
   "history-unavailable": "chat.rail.askHistoryUnavailable",
   missing: "chat.rail.askMissing",
   "model-unavailable": "chat.rail.askModelUnavailable",
+  "image-unsupported": "chat.rail.askImageUnsupported",
   "rate-limited": "chat.rail.askRateLimited",
   unavailable: "chat.rail.askUnavailable",
 } as const satisfies Record<
@@ -392,7 +379,7 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
               >`
             : html`<span class="chat-session-rail__status-dot" aria-hidden="true"></span>`
         }
-        <span>${healthLabel(digest.health)}</span>
+        <span>${t(`chat.rail.health.${digest.health}`)}</span>
       </span>
     `;
   }
@@ -415,7 +402,7 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
               title=${pullRequest.title}
             >
               <span>#${pullRequest.number}</span>
-              <span>${prStateLabel(pullRequest.state)}</span>
+              <span>${t(`chat.pullRequests.${pullRequest.state}`)}</span>
               ${
                 checks ? html`<span class="chat-session-rail__pr-checks">${checks}</span>` : nothing
               }
@@ -426,16 +413,11 @@ export class ChatSessionRailElement extends OpenClawLightDomElement {
     `;
   }
 
-  /**
-   * The empty state is the only place the companion explains its scope, so it
-   * shows openers it can actually answer from the transcript and the project
-   * files it may read, rather than a sentence about being read-only.
-   */
   private renderStarters() {
     return html`
       <div class="chat-session-rail__starters">
         ${SESSION_RAIL_STARTER_KEYS.map((key) => {
-          const question = t(`chat.rail.starters.${key}` as Parameters<typeof t>[0]);
+          const question = t(`chat.rail.starters.${key}`);
           return html`
             <button
               class="chip chat-session-rail__starter"

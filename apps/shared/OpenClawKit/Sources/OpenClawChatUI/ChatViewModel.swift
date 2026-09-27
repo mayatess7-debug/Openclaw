@@ -89,9 +89,9 @@ public final class OpenClawChatViewModel {
     /// Setters are module-internal for the sending extension only.
     public internal(set) var isSending = false
     public internal(set) var isSendingAttachmentDraft = false
+    public internal(set) var isSubmittingDraft = false
     private var deferredExternalSessionKey: String?
     private var deferredDeliveryIdentity: DeferredDeliveryIdentity?
-    var isSubmittingDraft = false
     @ObservationIgnored
     var isCreatingSession = false
     var attachmentStagingCount = 0
@@ -125,6 +125,7 @@ public final class OpenClawChatViewModel {
     var hasActiveSessionRunWithoutChatSnapshot = false
     var activeSessionRunIDs: [String] = []
     var liveRunStateByRunID: [String: ChatLiveRunState] = [:]
+    var narration = ChatNarration()
     public internal(set) var progressCard: ProgressCard?
     var progressCardStoreAvailable: Bool?
     @ObservationIgnored
@@ -278,6 +279,8 @@ public final class OpenClawChatViewModel {
     private(set) var isTransportDetached = false
     @ObservationIgnored
     private nonisolated(unsafe) var bootstrapTask: Task<Void, Never>?
+    @ObservationIgnored
+    var historyInvalidationRefresh: (requestID: UInt64, task: Task<Void, Never>)?
     var runOwnershipGeneration: UInt64 = 0
     var latestAppliedRunSnapshotRequestID: UInt64 = 0
     var isApplyingRunSnapshot = false
@@ -471,6 +474,7 @@ public final class OpenClawChatViewModel {
         let supportsInFlightRunState: Bool
         let hasInFlightRun: Bool
         let sessionHasActiveRun: Bool
+        var retryAfterMs: Int?
 
         static let failed = RunHistoryRefreshResult(
             applied: false,
@@ -605,6 +609,7 @@ public final class OpenClawChatViewModel {
     /// Permanently retires a replaced presentation without aborting its gateway run.
     public func detachTransport() {
         guard !self.isTransportDetached else { return }
+        self.cancelHistoryInvalidationRefresh()
         self.retireQuestionAuthority()
         self.isTransportDetached = true
         self.invalidateSourceContext()
@@ -1270,6 +1275,7 @@ extension OpenClawChatViewModel {
         self.modelSelectionPolicy = nil
         self.modelCatalogMessage = nil
         replaceMessages([])
+        self.narration = ChatNarration()
         self.isShowingCachedTranscript = false
         self.hasAppliedLiveHistory = false
         self.pendingLocalUserEchoMessageIDsByRunID.removeAll()
@@ -1310,6 +1316,7 @@ extension OpenClawChatViewModel {
         self.replyTarget = nil
         self.runMessageScopesByRunID.removeAll()
         self.provisionalFinalMessagesByID.removeAll()
+        self.narration = ChatNarration()
         self.startBootstrap()
     }
 

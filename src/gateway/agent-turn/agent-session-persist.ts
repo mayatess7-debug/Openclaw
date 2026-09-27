@@ -13,7 +13,6 @@ import {
   resolveSessionWorkStartError,
   type SessionEntry,
   type InternalSessionEntry,
-  type SessionFreshness,
 } from "../../config/sessions.js";
 import {
   patchSessionEntryTarget,
@@ -48,7 +47,6 @@ import type { GatewayRequestHandlerOptions } from "../server-methods/types.js";
 import {
   cronContinuationHasReusableRuntime,
   emitAgentSendSessionLifecycleTransition,
-  withSqliteSessionFileMarker,
   type RestoredCronContinuation,
 } from "./agent-handler-helpers.js";
 
@@ -68,11 +66,7 @@ type AgentSessionPersistResult = {
   supersededSessionId?: string;
   admittedSessionId: string;
   skipAgentInitialSessionTouch: boolean;
-  patchBuild: AgentSessionPatchBuild;
   isNewSession: boolean;
-  rotatedSessionId: boolean;
-  usableRequestedSessionId?: string;
-  freshness: SessionFreshness | undefined;
   spawnedBy?: string;
   groupId?: string;
   groupChannel?: string;
@@ -139,6 +133,20 @@ export async function persistAgentSessionPhase(params: {
   let mainRestartRecoveryOwnerLease: MainSessionRecoveryOwnerLease | undefined;
   let skipAgentInitialSessionTouch = false;
   let createdNewEntry = false;
+  const abortForLifecycleRotation = () =>
+    params.abortForLifecycleRotation({
+      sessionKey: params.canonicalSessionKey,
+      agentId: params.agentId,
+    });
+  const isDeliveryDenied = (entry: SessionEntry | undefined) =>
+    params.request.deliver === true &&
+    resolveSendPolicy({
+      cfg: params.cfg,
+      entry,
+      sessionKey: params.canonicalSessionKey,
+      channel: sessionDeliveryChannel(entry),
+      chatType: entry?.chatType,
+    }) === "deny";
   const recoveredSessionStartedAt =
     !patchBuild.isNewSession &&
     params.entry !== undefined &&
@@ -152,12 +160,7 @@ export async function persistAgentSessionPhase(params: {
       : undefined;
 
   if (params.storePath && !params.suppressVisibleSessionEffects) {
-    if (
-      params.abortForLifecycleRotation({
-        sessionKey: params.canonicalSessionKey,
-        agentId: params.agentId,
-      })
-    ) {
+    if (abortForLifecycleRotation()) {
       return undefined;
     }
     let deniedBySendPolicy = false;
@@ -266,6 +269,12 @@ export async function persistAgentSessionPhase(params: {
                 requirement: marker.toolsAllowExecTargetRequirement,
                 execTarget: marker.toolsAllowExecTarget,
               });
+              const scheduledToolPolicy = normalizeCronScheduledToolPolicy(
+                marker.scheduledToolPolicy,
+              );
+              const toolsAllowExecTarget = normalizeCronToolsAllowExecTarget(
+                marker.toolsAllowExecTarget,
+              );
               restoredCronContinuation = {
                 ...params.restoredCronContinuationIdentity,
                 provider,
@@ -273,27 +282,15 @@ export async function persistAgentSessionPhase(params: {
                 ...(freshEntry.thinkingLevel ? { thinking: freshEntry.thinkingLevel } : {}),
                 ...(restoredToolsAllow !== undefined ? { toolsAllow: restoredToolsAllow } : {}),
                 ...(marker.toolsAllowIsDefault === true ? { toolsAllowIsDefault: true } : {}),
-                ...(normalizeCronScheduledToolPolicy(marker.scheduledToolPolicy)
-                  ? {
-                      scheduledToolPolicy: normalizeCronScheduledToolPolicy(
-                        marker.scheduledToolPolicy,
-                      ),
-                    }
-                  : {}),
-                ...(normalizeCronScheduledToolPolicy(marker.scheduledToolPolicy)?.mode === "account"
+                ...(scheduledToolPolicy ? { scheduledToolPolicy } : {}),
+                ...(scheduledToolPolicy?.mode === "account"
                   ? {
                       scheduledToolCallerOrigin: normalizeCronScheduledToolCallerOrigin(
                         marker.scheduledToolCallerOrigin,
                       ),
                     }
                   : {}),
-                ...(normalizeCronToolsAllowExecTarget(marker.toolsAllowExecTarget)
-                  ? {
-                      toolsAllowExecTarget: normalizeCronToolsAllowExecTarget(
-                        marker.toolsAllowExecTarget,
-                      ),
-                    }
-                  : {}),
+                ...(toolsAllowExecTarget ? { toolsAllowExecTarget } : {}),
                 ...(marker.cliSessionBindingFacts
                   ? { cliSessionBindingFacts: { ...marker.cliSessionBindingFacts } }
                   : {}),
@@ -312,7 +309,7 @@ export async function persistAgentSessionPhase(params: {
                 sessionKey: params.canonicalSessionKey,
                 sessionAgentId: params.sessionAgentId,
                 lifecycleRevision: marker.lifecycleRevision,
-                initialEntry: structuredClone(entryForPatch!),
+                initialEntry: structuredClone(entryForPatch),
                 mediaTaskIdsBefore: getGeneratedMediaTaskIdsForSessionKey(
                   params.canonicalSessionKey,
                 ),
@@ -360,12 +357,7 @@ export async function persistAgentSessionPhase(params: {
                   ),
                 };
             createdNewEntry = freshEntry === undefined;
-            const merged = withSqliteSessionFileMarker({
-              agentId: params.sessionAgentId,
-              entry: mergeSessionEntry(entryForPatch, effectivePatch),
-              sessionKey: params.canonicalSessionKey,
-              storePath: params.storePath,
-            });
+            const merged = mergeSessionEntry(entryForPatch, effectivePatch);
             const recoveryTransition = params.isRestartRecoveryResumeRun
               ? transitionMainSessionRecovery(merged as InternalSessionEntry, {
                   kind: "validate_recovery",
@@ -398,16 +390,7 @@ export async function persistAgentSessionPhase(params: {
               };
               params.setMainRestartRecoveryOwnerLease(mainRestartRecoveryOwnerLease);
             }
-            if (
-              params.request.deliver === true &&
-              resolveSendPolicy({
-                cfg: params.cfg,
-                entry: merged,
-                sessionKey: params.canonicalSessionKey,
-                channel: sessionDeliveryChannel(merged),
-                chatType: merged.chatType,
-              }) === "deny"
-            ) {
+            if (isDeliveryDenied(merged)) {
               deniedBySendPolicy = true;
               deniedSessionEntry = merged;
               return null;
@@ -433,12 +416,7 @@ export async function persistAgentSessionPhase(params: {
         params.respond(false, undefined, creationAuthorizationError);
         return undefined;
       }
-      if (
-        params.abortForLifecycleRotation({
-          sessionKey: params.canonicalSessionKey,
-          agentId: params.agentId,
-        })
-      ) {
+      if (abortForLifecycleRotation()) {
         return undefined;
       }
       if (archivedDuringStoreUpdateError) {
@@ -457,30 +435,14 @@ export async function persistAgentSessionPhase(params: {
         params.respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, err.message));
         return undefined;
       }
-      if (restoredCronContinuationError) {
-        params.respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, restoredCronContinuationError),
-        );
-        return undefined;
-      }
-      if (restartRecoveryReservationConflict) {
-        params.respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, restartRecoveryReservationConflict),
-        );
+      const unavailableError = restoredCronContinuationError || restartRecoveryReservationConflict;
+      if (unavailableError) {
+        params.respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, unavailableError));
         return undefined;
       }
       throw err;
     }
-    if (
-      params.abortForLifecycleRotation({
-        sessionKey: params.canonicalSessionKey,
-        agentId: params.agentId,
-      })
-    ) {
+    if (abortForLifecycleRotation()) {
       return undefined;
     }
     if (deniedBySendPolicy && deniedSessionEntry) {
@@ -511,13 +473,7 @@ export async function persistAgentSessionPhase(params: {
       params.respond(false, undefined, errorShapeFromError(ErrorCodes.INVALID_REQUEST, err));
       return undefined;
     }
-    if (
-      params.respondToGatewayAdmissionOutcome() ||
-      params.abortForLifecycleRotation({
-        sessionKey: params.canonicalSessionKey,
-        agentId: params.agentId,
-      })
-    ) {
+    if (params.respondToGatewayAdmissionOutcome() || abortForLifecycleRotation()) {
       return undefined;
     }
     skipAgentInitialSessionTouch = params.touchInteraction;
@@ -531,10 +487,7 @@ export async function persistAgentSessionPhase(params: {
     }
   }
 
-  const isNewSession = patchBuild.isNewSession;
-  const rotatedSessionId = patchBuild.rotatedSessionId;
-  const usableRequestedSessionId = patchBuild.usableRequestedSessionId;
-  const freshness = patchBuild.freshness;
+  const { isNewSession, rotatedSessionId, usableRequestedSessionId, freshness } = patchBuild;
   if (createdNewEntry && sessionEntry) {
     recordSessionCreated(params.cfg, {
       sessionKey: params.canonicalSessionKey,
@@ -569,16 +522,7 @@ export async function persistAgentSessionPhase(params: {
         : undefined,
     });
   }
-  if (
-    params.request.deliver === true &&
-    resolveSendPolicy({
-      cfg: params.cfg,
-      entry: sessionEntry,
-      sessionKey: params.canonicalSessionKey,
-      channel: sessionDeliveryChannel(sessionEntry),
-      chatType: sessionEntry?.chatType,
-    }) === "deny"
-  ) {
+  if (isDeliveryDenied(sessionEntry)) {
     params.respond(
       false,
       undefined,
@@ -598,11 +542,7 @@ export async function persistAgentSessionPhase(params: {
     // Admission revalidation can observe a newer session id after persistence.
     admittedSessionId: params.getAdmittedSessionId(),
     skipAgentInitialSessionTouch,
-    patchBuild,
     isNewSession,
-    rotatedSessionId,
-    usableRequestedSessionId,
-    freshness,
     spawnedBy: patchBuild.spawnedBy,
     groupId: patchBuild.groupId,
     groupChannel: patchBuild.groupChannel,

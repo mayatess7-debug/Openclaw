@@ -28,15 +28,14 @@ import {
   updateFirstHopCompatLaneName,
 } from "./update-first-hop-lanes.mjs";
 import {
+  assertSupportedUpgradeSurvivorBaselineSpec,
   isTrustedHarnessOwnedUpgradeSurvivorScenario,
-  normalizeUpgradeSurvivorBaselineSpec,
   parseUpgradeSurvivorBaselineSpecs,
   parseUpgradeSurvivorScenarios,
   supportsUpgradeSurvivorScenarioAtBaseline,
 } from "./upgrade-survivor-policy.mjs";
 
 export { normalizeReleaseProfile };
-export { normalizeUpgradeSurvivorBaselineSpec };
 
 export const DEFAULT_E2E_BARE_IMAGE = "openclaw-docker-e2e-bare:local";
 export const DEFAULT_E2E_FUNCTIONAL_IMAGE = "openclaw-docker-e2e-functional:local";
@@ -522,6 +521,7 @@ function expandUpgradeSurvivorBaselineLanes(
     return { lanes: poolLanes, omittedLaneNames: [] };
   }
   const baselineSpecs = parseUpgradeSurvivorBaselineSpecs(rawBaselineSpecs);
+  baselineSpecs.forEach(assertSupportedUpgradeSurvivorBaselineSpec);
   // Trusted-current planners may know scenarios that a frozen target's Docker
   // harness cannot seed or assert. Filter by the selected tree's concrete
   // harness contract so validation never schedules an impossible target lane.
@@ -771,9 +771,12 @@ export function requiredPrepublishPluginPackagesForLanes(poolLanes: DockerE2eLan
       scenario === "abandoned-update" ||
       scenario === "custom-plugin-siblings" ||
       scenario === "projects-doctor" ||
+      scenario === "channel-owner-policy" ||
       scenario === "projects-startup-migration" ||
       scenario === "taskflow-restoration" ||
-      scenario === "workshop-doctor-recovery"
+      scenario === "workshop-doctor-recovery" ||
+      scenario === "update-report-recovery" ||
+      scenario === "dreaming-cron-doctor"
     ) {
       continue;
     }
@@ -900,6 +903,21 @@ export function resolveDockerE2ePlan(options: DockerE2ePlanOptions) {
       options.allowFrozenTargetScenarioOmissions,
       options.frozenTarget,
     );
+    const requestedBaselines = parseUpgradeSurvivorBaselineSpecs(upgradeSurvivorBaselines);
+    if (
+      poolLanes.some(
+        (lane) => lane.name === "published-upgrade-survivor" || lane.name === "update-migration",
+      ) &&
+      parseUpgradeSurvivorScenarios(upgradeSurvivorScenarios).includes("missing-load-path") &&
+      requestedBaselines.length > 0 &&
+      requestedBaselines.every(
+        (baseline) => !supportsUpgradeSurvivorScenarioAtBaseline("missing-load-path", baseline),
+      )
+    ) {
+      throw new Error(
+        `missing-load-path has no compatible published baseline in ${upgradeSurvivorBaselines}: the installed updater must admit invalid config before candidate staging.`,
+      );
+    }
     for (const laneName of expansion.omittedLaneNames) {
       omittedUnsupportedLaneNames.add(laneName);
     }
@@ -950,6 +968,7 @@ export function resolveDockerE2ePlan(options: DockerE2ePlanOptions) {
             if (!survivorBaseLane) {
               return [expandedLane];
             }
+            // Exact-row reruns retain the original matrix only to reconstruct the catalog.
             const targetExpansion = expandUpgradeSurvivorBaselineLanes(
               [survivorBaseLane],
               upgradeSurvivorBaselines,

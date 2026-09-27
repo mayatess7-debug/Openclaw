@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -14,13 +13,9 @@ import {
 } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseByPathAsync,
-} from "../state/openclaw-state-db-cache.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { claimOpenClawStateOwnership } from "../state/openclaw-state-ownership-operations.js";
-import { OpenClawStateOwnershipError } from "../state/openclaw-state-ownership.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
   executeOpenClawStateWorker,
@@ -34,15 +29,15 @@ import {
 } from "../tasks/task-flow-registry.store.kernel.js";
 import type { TaskRecord } from "../tasks/task-registry.types.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
+import { acquireGatewayStateOwner } from "./gateway-state-owner.js";
 import * as nodeSqlite from "./node-sqlite.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { OpenClawStateOwnershipError } from "./sqlite-lifecycle-errors.js";
 import { SqliteSchemaVersionError } from "./sqlite-user-version.js";
 import { SQLITE_WORKER_MAX_MESSAGE_BYTES } from "./sqlite-worker-contract.js";
 import { registerSharedStateWorkerAdmissionTests } from "./sqlite-worker-shared-state-admission.test-support.js";
-import { closeUnclaimedSharedStateSqliteWorkers } from "./sqlite-worker-store.js";
-import { acquireGatewayLifecycleCoordinator } from "./state-database-coordinator.js";
 
 const dirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -59,25 +54,35 @@ function context() {
 }
 
 describe("canonical shared-state worker admission", () => {
-  it.each(["key", "value"])("bounds captured environment %s bytes before opening", async (part) => {
-    const padding = "x".repeat(SQLITE_WORKER_MAX_MESSAGE_BYTES);
-    const env = {
-      OPENCLAW_STATE_DIR: dirs.make("worker-environment-budget-"),
-      [part === "key" ? padding : "PADDING"]: part === "value" ? padding : "x",
-    };
-    const captured = captureOpenClawStateWorkerContext({ env });
-    await expect(
-      executeOpenClawStateWorker(captured, {
-        type: "flows.list",
-        input: { ownerKey: "agent:main:environment-budget" },
-      }),
-    ).rejects.toMatchObject({ code: "overloaded" });
-    expect(existsSync(captured.admission.databasePath)).toBe(false);
-  });
+  it.each(["key", "value", "agent-path"])(
+    "bounds captured initialization %s bytes before opening",
+    async (part) => {
+      const padding = "x".repeat(SQLITE_WORKER_MAX_MESSAGE_BYTES);
+      const env = {
+        OPENCLAW_STATE_DIR: dirs.make("worker-environment-budget-"),
+        [part === "key" ? padding : "PADDING"]: part === "value" ? padding : "x",
+      };
+      const captured = captureOpenClawStateWorkerContext({
+        env,
+        ...(part === "agent-path" ? { initializationAgentPaths: [padding] } : {}),
+      });
+      await expect(
+        executeOpenClawStateWorker(captured, {
+          type: "flows.list",
+          input: { ownerKey: "agent:main:environment-budget" },
+        }),
+      ).rejects.toMatchObject({ code: "overloaded" });
+      expect(existsSync(captured.admission.databasePath)).toBe(false);
+    },
+  );
 
-  it.each([false, true])(
-    "retains selected storage environment before worker initialization (retained: %s)",
-    async (retained) => {
+  it.each(
+    [false, true].flatMap((retained) =>
+      (["config", "paths"] as const).map((source) => ({ retained, source })),
+    ),
+  )(
+    "retains selected storage facts before worker initialization (retained: $retained, source: $source)",
+    async ({ retained, source }) => {
       const root = dirs.make("worker-selected-storage-");
       const env = {
         HOME: path.join(root, "home"),
@@ -98,11 +103,18 @@ describe("canonical shared-state worker admission", () => {
       const bytes = retained ? readFileSync(agentPath) : undefined;
       writeFileSync(
         env.OPENCLAW_CONFIG_PATH,
-        JSON.stringify({ agents: { entries: { main: { agentDir: "${STORE_ROOT}" } } } }),
+        source === "config"
+          ? JSON.stringify({ agents: { entries: { main: { agentDir: "${STORE_ROOT}" } } } })
+          : "{}",
       );
-      const captured = captureOpenClawStateWorkerContext({ env });
+      const knownPaths = [agentPath];
+      const captured = captureOpenClawStateWorkerContext({
+        env,
+        ...(source === "paths" ? { initializationAgentPaths: knownPaths } : {}),
+      });
       env.OPENCLAW_CONFIG_PATH = path.join(root, "later.json");
       env.STORE_ROOT = path.join(root, "later");
+      knownPaths[0] = path.join(root, "later", "openclaw-agent.sqlite");
 
       await executeOpenClawStateWorker(captured, {
         type: "flows.list",
@@ -234,7 +246,16 @@ describe("canonical shared-state worker admission", () => {
         path: databasePath,
         env: captured.environment,
       });
-      const gateway = acquireGatewayLifecycleCoordinator({ databasePath });
+      const gateway = acquireGatewayStateOwner({
+        databasePath,
+        payload: {
+          pid: process.pid,
+          createdAt: new Date().toISOString(),
+          role: "gateway",
+          stateDir: captured.environment.OPENCLAW_STATE_DIR,
+          configPath: path.join(captured.environment.OPENCLAW_STATE_DIR, "openclaw.json"),
+        },
+      });
       const mainSql = observeMainThreadSql();
       try {
         expect(
@@ -374,60 +395,6 @@ describe("canonical shared-state worker admission", () => {
         input: { ownerKey: "agent:main:main" },
       }),
     ).rejects.toBeInstanceOf(SqliteSchemaVersionError);
-  });
-
-  it("retries failed-open native custody through the owning path drain", async () => {
-    const captured = context();
-    const databasePath = captured.admission.databasePath;
-    const database = openOpenClawStateDatabase({ path: databasePath, env: captured.environment });
-    database.db.exec("PRAGMA user_version = 999999;");
-    await closeOpenClawStateDatabaseAsync();
-    const reopened = captureOpenClawStateWorkerContext({
-      path: databasePath,
-      env: captured.environment,
-    });
-    const nativeOpen = nodeSqlite.openNodeSqliteDatabase;
-    const opened = new Map<string, DatabaseSync>();
-    const openSpy = vi
-      .spyOn(nodeSqlite, "openNodeSqliteDatabase")
-      .mockImplementation((location, ...options) => {
-        const db = nativeOpen(location, ...options);
-        opened.set(location, db);
-        return db;
-      });
-    const gateway = acquireGatewayLifecycleCoordinator({ databasePath });
-    openSpy.mockRestore();
-    const native = opened.get(gateway.path);
-    if (!native) {
-      throw new Error("Expected the owned Gateway coordinator connection");
-    }
-    const failClose = () => {
-      throw new Error("Synthetic coordinator close failed");
-    };
-    vi.spyOn(native, "close").mockImplementationOnce(failClose).mockImplementationOnce(failClose);
-    const messages = vi.spyOn(Worker.prototype, "postMessage");
-    messages.mockImplementationOnce(function (this: Worker, message, transferList) {
-      messages.mockRestore();
-      this.postMessage(message, transferList ?? []);
-      gateway.release();
-    });
-    try {
-      await expect(
-        executeOpenClawStateWorker(reopened, {
-          type: "flows.list",
-          input: { ownerKey: "agent:main:main" },
-        }),
-      ).rejects.toThrow();
-      expect(native.isOpen).toBe(true);
-      await expect(closeOpenClawStateDatabaseByPathAsync(databasePath)).rejects.toThrow();
-      expect(native.isOpen).toBe(true);
-      await closeOpenClawStateDatabaseByPathAsync(databasePath);
-      expect(native.isOpen).toBe(false);
-    } finally {
-      vi.restoreAllMocks();
-      await closeUnclaimedSharedStateSqliteWorkers(databasePath);
-      gateway.release();
-    }
   });
 
   it.each(["open", "execute"] as const)(
