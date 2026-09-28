@@ -414,6 +414,7 @@ export function toToolDefinitions(
               }
               // A voice grant binds the post-finalizer execution shape. Consuming it
               // earlier would let later alias or tool-owned rewrites escape the grant.
+              signal?.throwIfAborted();
               const voiceConfirmation = consumeFinalClientVoiceToolConfirmation({
                 toolCallId,
                 toolName: name,
@@ -587,6 +588,7 @@ export function toClientToolDefinitions(
             recorder?.discard?.(toolCallId, func.name);
             return { content: [], details: { status: "skipped" } };
           }
+          signal?.throwIfAborted();
           const voiceConfirmation = consumeFinalClientVoiceToolConfirmation({
             toolCallId,
             toolName: func.name,
@@ -602,7 +604,6 @@ export function toClientToolDefinitions(
               runId: hookContext?.runId,
             });
           }
-          signal?.throwIfAborted();
           decision?.start?.();
           if (typeof onClientToolCall === "function") {
             onClientToolCall(func.name, paramsRecord);
