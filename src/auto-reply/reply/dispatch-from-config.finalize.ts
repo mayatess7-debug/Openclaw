@@ -472,10 +472,25 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
           // admission stays the strongest fact so channels cannot double-send.
           const fallbackSettle = await turnLedger.settleQueued(getDispatchAbortSignal());
           throwIfDispatchOperationAborted();
-          if (fallbackSettle !== "settled" || turnLedger.mayHaveDelivered()) {
+          const fallbackOutcome =
+            fallbackSettle === "settled" && fallbackSend.outcome
+              ? await fallbackSend.outcome
+              : undefined;
+          if (
+            fallbackSettle !== "settled" ||
+            !fallbackSend.outcome ||
+            fallbackOutcome === "delivered" ||
+            fallbackOutcome === "failed-deliver" ||
+            fallbackOutcome === "recovery-owned"
+          ) {
             queuedFinal = true;
-            noVisibleReplyFallbackDelivered = true;
-            // Re-snapshot so the delivered fallback is reflected in reported counts,
+            // Recovery-owned means the transport retains custody, not that the
+            // fallback became visible. Pending custody still prevents another
+            // fallback without falsely reporting this attempt as delivered.
+            if (fallbackOutcome !== "recovery-owned") {
+              noVisibleReplyFallbackDelivered = true;
+            }
+            // Re-snapshot so the accepted fallback is reflected in reported counts,
             // matching the TTS-only path which enqueues before the snapshot.
             counts = dispatcher.getQueuedCounts();
           }
