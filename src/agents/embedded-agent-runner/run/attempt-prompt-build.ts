@@ -478,6 +478,7 @@ export async function prepareEmbeddedAttemptPromptContext(input: {
           sessionKey: attempt.sessionKey,
           sessionId: attempt.sessionId,
           agentId: input.sessionAgentId,
+          includeEmptySnapshots: input.appendOnlyRuntimeContext === true,
         });
   const contextFragments = promptSubmission.runtimeOnly
     ? [...eventFragments, ...runtimeFacts]
