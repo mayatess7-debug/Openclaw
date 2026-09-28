@@ -62,6 +62,7 @@ import {
   setStoredSessionCatalogHidden,
   storeSidebarCatalogGrouping,
   type SidebarRecentSession,
+  type SidebarToolActivity,
 } from "./app-sidebar-session-types.ts";
 import { renderCommunityInviteCard } from "./community-invite-card.ts";
 import {
@@ -81,6 +82,7 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
   @state() onlineRunningOnly = false;
   @state() onlineSessionSort: "presence" | "open" | "running" = "presence";
   @state() override sidebarNarrationLines: ReadonlyMap<string, string> = new Map();
+  @state() override sidebarTools: ReadonlyMap<string, SidebarToolActivity> = new Map();
   @state() override sidebarObserverDigests: ReadonlyMap<string, SessionObserverDigest> = new Map();
 
   override readonly sessionOrganizer = new SessionOrganizerController(this);
@@ -336,6 +338,9 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
         },
         (digests) => {
           this.sidebarObserverDigests = digests;
+        },
+        (tools) => {
+          this.sidebarTools = tools;
         },
       );
       this.narration.sync(this.narrationSyncInput());
