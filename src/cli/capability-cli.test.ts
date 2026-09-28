@@ -335,11 +335,13 @@ vi.mock("../agents/prepared-model-catalog.js", () => ({
     mocks.loadModelCatalog as typeof import("../agents/prepared-model-catalog.js").readPreparedModelCatalog,
 }));
 
+vi.mock("../agents/simple-completion-execution.js", () => ({
+  completeWithPreparedSimpleCompletionModel:
+    mocks.completeWithPreparedSimpleCompletionModel as unknown as typeof import("../agents/simple-completion-execution.js").completeWithPreparedSimpleCompletionModel,
+}));
 vi.mock("../agents/simple-completion-runtime.js", () => ({
   acquireSimpleCompletionModelForAgent:
     mocks.acquireSimpleCompletionModelForAgent as unknown as typeof import("../agents/simple-completion-runtime.js").acquireSimpleCompletionModelForAgent,
-  completeWithPreparedSimpleCompletionModel:
-    mocks.completeWithPreparedSimpleCompletionModel as unknown as typeof import("../agents/simple-completion-runtime.js").completeWithPreparedSimpleCompletionModel,
 }));
 
 vi.mock("../agents/auth-profiles.js", () => ({
