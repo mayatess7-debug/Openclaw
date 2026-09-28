@@ -701,10 +701,10 @@ describe("built-in session tool role authority", () => {
         }),
       ).rejects.toThrow(/visibility|restricted|not visible/i);
       await expect(
-        createSessionsTool({ config: cfg, agentSessionKey: REQUESTER }).execute(
-          "denied-incognito",
-          { action: "patch", sessionKey: INCOGNITO, pinned: true },
-        ),
+        createSessionsTool({
+          config: cfg,
+          agentSessionKey: REQUESTER,
+        }).execute("denied-incognito", { action: "patch", sessionKey: INCOGNITO, pinned: true }),
       ).rejects.toThrow(/not visible/i);
       expect(loadSessionEntry({ agentId: "main", sessionKey: TARGET })?.archivedAt).toBeUndefined();
     });
@@ -746,15 +746,15 @@ describe("built-in session tool role authority", () => {
         },
         async () => {
           await expect(
-            createSessionsTool({ config: cfg, agentSessionKey: REQUESTER }).execute(
-              "denied-reader",
-              {
-                action: "patch",
-                sessionKey: TARGET,
-                expectedSessionId: TARGET_ID,
-                archived: true,
-              },
-            ),
+            createSessionsTool({
+              config: cfg,
+              agentSessionKey: REQUESTER,
+            }).execute("denied-reader", {
+              action: "patch",
+              sessionKey: TARGET,
+              expectedSessionId: TARGET_ID,
+              archived: true,
+            }),
           ).rejects.toThrow(/missing scope: operator.write/i);
         },
       );
