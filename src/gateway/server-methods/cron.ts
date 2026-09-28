@@ -27,7 +27,6 @@ import { cronJobReadView } from "../../cron/job-read-view.js";
 import { resolveCronJobBoundSessionKeys } from "../../cron/job-session-bindings.js";
 import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../../cron/scratch-contract.js";
-import type { CronListPageResult } from "../../cron/service/list-page-types.js";
 import type { CronUpdateOptions } from "../../cron/service/state.js";
 import { isInvalidCronSessionTargetIdError } from "../../cron/session-target.js";
 import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
@@ -87,7 +86,7 @@ import {
   scopedCronJobHandler,
 } from "./cron-job-access.js";
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
-import { compactCronListJob } from "./cron-list-projection.js";
+import { compactCronListJob, markCronListPage as markPage } from "./cron-list-projection.js";
 import { cronRunsHandler } from "./cron-runs.js";
 import {
   createCronSessionVisibility,
@@ -279,9 +278,9 @@ export const cronHandlers: GatewayRequestHandlers = {
       }
       const p = params as CronListParams;
       const admittedScope = readCronCallerScope(client);
-      const callerScope = admittedScope?.manageAll ? undefined : admittedScope;
+      const caller = admittedScope?.manageAll ? undefined : admittedScope;
       const requestedAgentId = p.agentId ? normalizeAgentId(p.agentId) : undefined;
-      if (callerScope && requestedAgentId && requestedAgentId !== callerScope.agentId) {
+      if (caller && requestedAgentId && requestedAgentId !== caller.agentId) {
         respondInvalidCronParams(respond, "cron.list", "agentId outside caller scope");
         return;
       }
@@ -297,7 +296,7 @@ export const cronHandlers: GatewayRequestHandlers = {
         sortBy: p.sortBy,
         sortDir: p.sortDir,
         // Owners retain visibility when execution is retargeted to another agent.
-        agentId: callerScope ? undefined : p.agentId,
+        agentId: caller ? undefined : p.agentId,
       };
       const matchesRequestScope = (job: CronJob) => {
         const scope = readCronCallerScope(client);
@@ -336,12 +335,12 @@ export const cronHandlers: GatewayRequestHandlers = {
         );
       }
       assertCronReadCurrent(options);
-      const cronVisibility = visibilityRead.resolve();
+      const roleScope = visibilityRead.resolve();
       const defaultAgentId = context.cron.getDefaultAgentId();
       diagnostics?.setRequestMode({
         compact: p.compact === true,
         previewsRequested: p.compact !== true && p.includeDeliveryPreviews !== false,
-        scopeApplied: Boolean(callerScope || cronVisibility),
+        scopeApplied: Boolean(caller || roleScope),
       });
       diagnostics?.mark("listing");
       const selectedJobIds = new Set<string>();
@@ -353,8 +352,8 @@ export const cronHandlers: GatewayRequestHandlers = {
         const currentScope = readCronCallerScope(client);
         // The filtered total belongs to this scope, even when its visible page is empty.
         if (
-          Boolean(currentScope && !currentScope.manageAll) !== Boolean(callerScope) ||
-          Boolean(visibilityRead.resolve()) !== Boolean(cronVisibility)
+          Boolean(currentScope && !currentScope.manageAll) !== Boolean(caller) ||
+          Boolean(visibilityRead.resolve()) !== Boolean(roleScope)
         ) {
           throw new Error("Cron list visibility changed; refresh the page");
         }
@@ -366,7 +365,7 @@ export const cronHandlers: GatewayRequestHandlers = {
         }
       };
       let matchesJob: ((job: CronJob) => boolean) | undefined;
-      if (callerScope || cronVisibility || p.sessionKey) {
+      if (caller || roleScope || p.sessionKey) {
         diagnostics?.startScopeAttempt();
         matchesJob = (job) => {
           const matched = matchesCurrentJob(job);
@@ -376,13 +375,13 @@ export const cronHandlers: GatewayRequestHandlers = {
           return matched;
         };
       }
-      let page: CronListPageResult;
       const finishPage = diagnostics?.startSourcePage();
-      try {
-        page = await context.cron.listPage(listOptions, matchesJob);
-      } finally {
-        finishPage?.();
-      }
+      const page = await markPage(
+        context.cron.listPage(listOptions, matchesJob),
+        Boolean(caller),
+        Boolean(roleScope),
+        finishPage,
+      );
       if (matchesJob) {
         for (const job of page.jobs) {
           selectedJobIds.add(job.id);
