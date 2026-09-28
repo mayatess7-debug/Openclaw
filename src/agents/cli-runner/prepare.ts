@@ -47,6 +47,7 @@ import {
 } from "../../routing/session-key.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
+import { resolveSkillEnvOverridesFromSnapshot } from "../../skills/runtime/env-overrides.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import {
@@ -130,6 +131,7 @@ import {
   CLAUDE_MANAGED_MCP_TIMEOUT_MS,
 } from "./bundle-mcp-claude.js";
 import { prepareCliBundleMcpConfig, resolveCliNativeWebSearchEnabled } from "./bundle-mcp.js";
+import { resolveClaudeChildTranscriptRoot } from "./child-env.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
 import { runCliCleanup } from "./cleanup.js";
 import {
@@ -1648,11 +1650,27 @@ async function prepareCliRunContextWithinReadFence(
       !nodeClaudePlacement &&
       candidateClaudeCliSessionId !== undefined &&
       isClaudeCliBackendId(params.provider);
+    // Reuse must be judged under the root the upcoming child selects, not the root a
+    // previous run wrote under: a config-dir change makes the stored transcript foreign.
+    const claudeCliTranscriptRoot = hasClaudeCliCandidate
+      ? await resolveClaudeChildTranscriptRoot({
+          provider: params.provider,
+          backend: preparedBackendFinal.backend,
+          preparedBackend: preparedBackendFinal,
+          skillEnv: resolveSkillEnvOverridesFromSnapshot({
+            snapshot: params.skillsSnapshot,
+            config: runConfig,
+          }),
+          remote: false,
+          cwd,
+        })
+      : undefined;
     const claudeCliTranscriptMissing =
       hasClaudeCliCandidate &&
       !(await prepareDeps.claudeCliSessionTranscriptHasContent({
         sessionId: candidateClaudeCliSessionId,
         workspaceDir: cwd,
+        projectsRoot: claudeCliTranscriptRoot,
       }));
     const managedClaudeLiveSessionGeneration =
       claudeCliTranscriptMissing &&
@@ -1676,6 +1694,7 @@ async function prepareCliRunContextWithinReadFence(
       (await prepareDeps.claudeCliSessionTranscriptHasOrphanedToolUse({
         sessionId: candidateClaudeCliSessionId,
         workspaceDir: cwd,
+        projectsRoot: claudeCliTranscriptRoot,
       }));
     const claudeCliInvalidatedReason: "missing-transcript" | "orphaned-tool-use" | undefined =
       claudeCliTranscriptMissing && !hasManagedClaudeLiveSession

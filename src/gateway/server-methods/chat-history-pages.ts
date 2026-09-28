@@ -158,12 +158,14 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
               entry,
               provider,
               localMessages: incrementalTail.rawMessages,
+              cwd: params.cwd,
             });
             const cliHistory = resolveChatHistoryWithCliSessionImports({
               entry,
               provider,
               localMessages: incrementalTail.rawMessages,
               preparedImportedMessages: importedMessages,
+              cwd: params.cwd,
             });
             if ((offset !== undefined || messageId) && !cliHistory.imported) {
               return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });
@@ -184,6 +186,7 @@ async function readChatHistoryPageLocal(params: ChatHistoryPageParams): Promise<
                 provider,
                 localMessages: completeLocalMessages,
                 preparedImportedMessages: importedMessages,
+                cwd: params.cwd,
               });
               if (!completeCliHistory.imported) {
                 return readChatHistoryPageLocal({ ...params, ignoreCliSessionImports: true });

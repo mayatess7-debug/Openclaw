@@ -4,7 +4,11 @@ import {
   errorShape,
   validateChatHistoryParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { resolveAgentConfig } from "../../agents/agent-scope.js";
+import {
+  resolveAgentConfig,
+  resolveAgentRunCwd,
+  resolveAgentWorkspaceDir,
+} from "../../agents/agent-scope.js";
 import { findModelCatalogEntry } from "../../agents/model-catalog.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import {
@@ -275,6 +279,13 @@ export async function handleChatHistoryRequest({
                   effectiveMaxChars,
                   offset,
                   messageId,
+                  // Match CLI preparation: task cwd takes precedence over workspace.
+                  cwd: resolveClaudeCliBindingSessionId(historyEntry)
+                    ? (historyEntry?.spawnedCwd ??
+                      resolveAgentRunCwd(cfg, sessionAgentId) ??
+                      historyEntry?.spawnedWorkspaceDir ??
+                      resolveAgentWorkspaceDir(cfg, sessionAgentId))
+                    : undefined,
                 },
                 signal,
               ),

@@ -23,6 +23,7 @@ type CliSessionHistoryParams = {
   provider?: string;
   localMessages: unknown[];
   homeDir?: string;
+  cwd?: string;
   preparedImportedMessages?: unknown[];
 };
 
@@ -52,6 +53,8 @@ export function resolveChatHistoryWithCliSessionImports(params: CliSessionHistor
     readClaudeCliSessionMessages({
       cliSessionId: binding.sessionId,
       homeDir: params.homeDir,
+      cwd: binding.cwd ?? params.cwd,
+      projectsRoot: binding.transcriptRoot,
       localSessionId: params.entry?.sessionId,
       reseedReceipt: binding.reseedReceipt,
     });
@@ -78,6 +81,8 @@ export async function readChatHistoryCliSessionImportSnapshot(
     ? await readClaudeCliSessionMessagesAsync({
         cliSessionId: binding.sessionId,
         homeDir: params.homeDir,
+        cwd: binding.cwd ?? params.cwd,
+        projectsRoot: binding.transcriptRoot,
         localSessionId: params.entry?.sessionId,
         reseedReceipt: binding.reseedReceipt,
       })
