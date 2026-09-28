@@ -1314,6 +1314,8 @@ class NodeRuntime private constructor(
         SensitiveFeatureConfig.accessibilityControlEnabled && mobileUiHandler.isConnected.value
       },
       voiceWakeAvailable = ::isVoiceWakeCapabilityEnabled,
+      incomingCallAvailable = { prefs.isIncomingCallAllowed(prefs.gatewayRegistry.activeStableId.value) },
+      incomingCallInvoke = { command, params -> incomingCalls.invoke(command, params) },
     )
 
   private val connectionManager: ConnectionManager =
@@ -1702,6 +1704,7 @@ class NodeRuntime private constructor(
       },
       onDisconnected = { message ->
         if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
+        incomingCalls.invalidate()
         clearOperatorGatewayState(retirePendingCronRuns = false)
         chat.applyMainSessionKey(resolveMainSessionKey())
         chat.onDisconnected(message)
@@ -2075,7 +2078,7 @@ class NodeRuntime private constructor(
     }
   }
 
-  private val nodeSession =
+  private val nodeSession: GatewaySession =
     GatewaySession(
       scope = scope,
       identityStore = identityStore,
@@ -2102,6 +2105,7 @@ class NodeRuntime private constructor(
       },
       onDisconnected = { message ->
         invalidateNodeCapabilityApprovalState()
+        incomingCalls.invalidate()
         nodeHostStatsJob?.cancel()
         nodeHostStatsJob = null
         updateStatus {
@@ -2432,9 +2436,59 @@ class NodeRuntime private constructor(
 
         fun(isCurrent: () -> Boolean) {
           finishTalkModeAfterRelayClose(ownershipEpoch, isCurrent)
+          if (isCurrent()) incomingCalls.invalidate()
         }
       },
     )
+  }
+
+  @Volatile private var incomingCallCaptureId: String? = null
+
+  internal val incomingCalls: ai.openclaw.app.calls.IncomingCallController by lazy {
+    ai.openclaw.app.calls.IncomingCallController(
+      context = appContext,
+      scope = scope,
+      prefs = prefs,
+      gatewayId = { connectedEndpoint?.stableId?.takeIf { nodeSession.isReady() && operatorSession.isReady() } },
+      captureAuthority = {
+        val nodeLease = nodeSession.captureRequestLease(connectedEndpoint?.stableId)
+        val operatorLease = operatorSession.captureRequestLease(connectedEndpoint?.stableId)
+        if (nodeLease == null || operatorLease == null) null else ({ nodeLease.isCurrent() && operatorLease.isCurrent() })
+      },
+      isBusy = {
+        _voiceCaptureMode.value != VoiceCaptureMode.Off || voiceNoteOwnsMic || dictationOwnsMic || cameraAudioOwnsMic || gatewayConnectionHandoff.value.pending
+      },
+      startAudio = { callId, sessionKey ->
+        synchronized(voiceCaptureOwnershipLock) {
+          check(incomingCallCaptureId == null && _voiceCaptureMode.value == VoiceCaptureMode.Off && !voiceNoteOwnsMic && !dictationOwnsMic && !cameraAudioOwnsMic) { "Microphone busy" }
+          incomingCallCaptureId = callId
+          talkMode.prepareIncomingCall(sessionKey)
+          setVoiceCaptureMode(VoiceCaptureMode.TalkMode)
+        }
+        talkMode.awaitIncomingCallReady()
+      },
+      stopAudio = { callId ->
+        synchronized(voiceCaptureOwnershipLock) {
+          if (incomingCallCaptureId == callId) {
+            incomingCallCaptureId = null
+            setVoiceCaptureMode(VoiceCaptureMode.Off)
+            talkMode.prepareIncomingCall(null)
+            talkMode.setPlaybackEnabled(speakerEnabled.value)
+          }
+        }
+      },
+      setMuted = { muted -> talkMode.setIncomingCallMuted(muted) },
+    )
+  }
+
+  fun setIncomingCallsEnabled(
+    enabled: Boolean,
+    gatewayStableId: String? = prefs.gatewayRegistry.activeStableId.value,
+  ) {
+    if (gatewayStableId == null || gatewayStableId != prefs.gatewayRegistry.activeStableId.value) return
+    prefs.setIncomingCallsEnabled(enabled, gatewayStableId)
+    if (!enabled) incomingCalls.invalidate()
+    refreshAcceptedGatewayConnection()
   }
 
   val talkModeEnabled: StateFlow<Boolean>
@@ -3408,7 +3462,7 @@ class NodeRuntime private constructor(
       }
     } else {
       stopMessageSpeech()
-      stopActiveVoiceSession()
+      stopActiveVoiceSession(preserveIncomingCall = true)
       publishNodePresenceAliveBeacon(NodePresenceAliveBeacon.Trigger.Background, throttleRecentSuccess = true)
     }
   }
@@ -4068,6 +4122,7 @@ class NodeRuntime private constructor(
     block: suspend (ownershipEpoch: Long) -> T,
   ): T =
     voiceCapturePreparationMutex.withLock {
+      check(incomingCallCaptureId == null) { "CALL_BUSY: end the active data call before push-to-talk" }
       // Preparation suspends while gateway config loads. Serialize ownership so
       // a stale command cannot clean up a newer command before capture starts.
       if (
@@ -4464,6 +4519,7 @@ class NodeRuntime private constructor(
     mode: VoiceCaptureMode,
     persistManualMic: Boolean = true,
   ) {
+    if (incomingCallCaptureId != null && mode != VoiceCaptureMode.TalkMode) incomingCalls.invalidate()
     var startAfterSuppression: VoiceCaptureMode? = null
     var ownershipEpoch = 0L
     val suppressionUpdate =
@@ -4513,8 +4569,8 @@ class NodeRuntime private constructor(
             }
             micCapture.setMicEnabled(false)
             NodeForegroundService.setVoiceCaptureMode(appContext, VoiceCaptureMode.TalkMode)
-            talkMode.ttsOnAllResponses = true
-            talkMode.setPlaybackEnabled(speakerEnabled.value)
+            talkMode.ttsOnAllResponses = incomingCallCaptureId == null
+            talkMode.setPlaybackEnabled(incomingCallCaptureId != null || speakerEnabled.value)
             scope.launch { talkMode.refreshConfig() }
             talkMode.stopAllCapture()
             startAfterSuppression = VoiceCaptureMode.TalkMode
@@ -4561,9 +4617,12 @@ class NodeRuntime private constructor(
     setVoiceCaptureMode(VoiceCaptureMode.Off)
   }
 
-  private fun stopActiveVoiceSession() {
+  private fun stopActiveVoiceSession(preserveIncomingCall: Boolean = false) {
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
+        // Only Answer assigns this owner, after the call's microphone foreground service is ready.
+        // Its lifetime belongs to the call, not MainActivity visibility; ordinary Talk still stops.
+        if (preserveIncomingCall && incomingCallCaptureId != null) return
         talkPttCommandEpoch.incrementAndGet()
         voiceCaptureOwnershipEpoch.incrementAndGet()
         talkPttOwnership.set(null)
@@ -5473,6 +5532,7 @@ class NodeRuntime private constructor(
           prefs.clearGatewayCustomHeaders(normalized)
           prefs.clearGatewayTlsFingerprint(normalized)
           prefs.clearNotificationForwardingSessionKey(normalized)
+          prefs.clearIncomingCallConsent(normalized)
         }.onFailure { err ->
           runCatching { clientDatabases.cancelGatewayRemoval(normalized) }
           Log.e("OpenClawRuntime", "Failed to retire forgotten gateway authentication", err)
@@ -5588,6 +5648,7 @@ class NodeRuntime private constructor(
     micCapture.onGatewayScopeChanging()
     stopActiveVoiceSession()
     talkMode.onGatewayScopeChanging()
+    incomingCalls.invalidate()
     if (voiceReplySpeakerLazy.isInitialized()) {
       voiceReplySpeaker.onGatewayScopeChanging()
     }
