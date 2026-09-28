@@ -37,6 +37,7 @@ import {
   setMinimumTimeoutMsForTests,
   setSetupGraceTimeoutMsForTests,
 } from "./config.js";
+import { registerActiveMemoryEscalationIntegrationTests } from "./index.escalation.test-support.js";
 import plugin from "./index.js";
 import * as recallRun from "./recall-run.js";
 import {
@@ -75,6 +76,7 @@ const hoisted = vi.hoisted(() => {
     },
   };
   return {
+    evaluateDecision: vi.fn(),
     closeActiveMemorySearchManager: vi.fn(async () => {}),
     getActiveMemorySearchManager: vi.fn(async () => ({ manager: null })),
     cleanupSessionLifecycleArtifacts: vi.fn(),
@@ -325,6 +327,7 @@ describe("active-memory plugin", () => {
     name: "Active Memory",
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
     runtime: {
+      decisions: { evaluate: hoisted.evaluateDecision },
       agent: {
         runEmbeddedAgent: runtimeRunEmbeddedAgent,
         resolveCliBackendDispatchEligibility,
@@ -1950,6 +1953,28 @@ describe("active-memory plugin", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
     expect(hasDebugLine("active-memory: recall skipped reason=no-recall-intent")).toBe(true);
     expect(hasInfoLine("active-memory: recall skipped reason=no-recall-intent")).toBe(false);
+  });
+
+  registerActiveMemoryEscalationIntegrationTests({
+    expectPrependContextContains,
+    hasDebugLine,
+    hasInfoLine,
+    registerPluginConfig,
+    runEmbeddedAgent,
+    runPromptBuild,
+    evaluateDecision: hoisted.evaluateDecision,
+    setDecisionAssistance: (enabled) => {
+      const agents = (configFile.agents ?? {}) as Record<string, unknown>;
+      const defaults = (agents.defaults ?? {}) as Record<string, unknown>;
+      configFile = {
+        ...configFile,
+        agents: {
+          ...agents,
+          defaults: { ...defaults, experimental: { decisionAssistance: enabled } },
+        },
+      };
+    },
+    skippedRecallContext,
   });
 
   it("does not run deep recall when the live active-memory plugin entry is removed", async () => {
