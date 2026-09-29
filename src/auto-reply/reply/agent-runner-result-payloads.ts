@@ -15,7 +15,6 @@ import {
   toDiagnosticUsage,
 } from "../../agents/usage.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
-import type { ProgressContinuationState } from "../../channels/progress-continuation.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
@@ -549,68 +548,44 @@ export async function prepareReplyAgentPayloads(state: {
       ? appendUnscheduledReminderNote(replyPayloads)
       : replyPayloads;
 
-  if (implicitContinuation || (pendingContinuation && runResult.acceptedSessionSpawns?.length)) {
+  if (implicitContinuation) {
     const statusPayload = guardedReplyPayloads.find(
       (payload) => getReplyPayloadMetadata(payload)?.continuationStatus === true,
     );
     const acceptedSessionSpawns = runResult.acceptedSessionSpawns;
     const requesterSessionKey = sessionKey ?? followupRun.run.sessionKey;
-    if (
-      implicitContinuation &&
-      (!requesterSessionKey || !acceptedSessionSpawns?.length || !statusPayload)
-    ) {
+    if (!requesterSessionKey || !acceptedSessionSpawns?.length || !statusPayload) {
       throw new Error("accepted continuation status could not be prepared for delivery");
     }
-    if (requesterSessionKey && acceptedSessionSpawns?.length && statusPayload) {
-      let progressPresentation: ProgressContinuationState | undefined;
-      if (implicitContinuation) {
-        let settlementPromise: Promise<void> | undefined;
-        const settlement: PendingContinuationSettlement = {
-          settle: (statusDelivered) =>
-            (settlementPromise ??= (async () => {
-              const presentation = progressPresentation;
-              progressPresentation = undefined;
-              try {
-                const { settleRequesterAfterSessionSpawns } =
-                  await import("../../agents/subagents/registry/subagent-registry.js");
-                const requester = {
-                  requesterSessionKey,
-                  requesterAgentId: followupRun.run.agentId,
-                  requesterTurnRunId: runId,
-                  acceptedSessionSpawns,
-                };
-                const requesterYielded = statusDelivered || presentation !== undefined;
-                try {
-                  if (
-                    !settleRequesterAfterSessionSpawns({
-                      ...requester,
-                      requesterYielded,
-                      ...(presentation ? { progressPresentation: presentation } : {}),
-                    })
-                  ) {
-                    throw new Error(
-                      "accepted continuation children could not transfer terminal delivery",
-                    );
-                  }
-                } catch (error) {
-                  // Adoption is positive visibility even when the later transport
-                  // outcome is unknown. A failed handoff must still release the child.
-                  if (!statusDelivered && requesterYielded) {
-                    settleRequesterAfterSessionSpawns({ ...requester, requesterYielded: false });
-                  }
-                  throw error;
-                }
-              } finally {
-                getReplyPayloadMetadata(statusPayload)?.progressContinuation?.close();
-              }
-            })().catch((error: unknown) => {
-              settlementPromise = undefined;
-              throw error;
-            })),
-        };
-        opts?.onPendingContinuation?.(settlement);
-      }
-    }
+    let settlementPromise: Promise<void> | undefined;
+    const settlement: PendingContinuationSettlement = {
+      settle: (statusDelivered) =>
+        (settlementPromise ??= (async () => {
+          try {
+            const { settleRequesterAfterSessionSpawns } =
+              await import("../../agents/subagents/registry/subagent-registry.js");
+            if (
+              !settleRequesterAfterSessionSpawns({
+                requesterSessionKey,
+                requesterAgentId: followupRun.run.agentId,
+                requesterTurnRunId: runId,
+                acceptedSessionSpawns,
+                requesterYielded: statusDelivered,
+              })
+            ) {
+              throw new Error(
+                "accepted continuation children could not transfer terminal delivery",
+              );
+            }
+          } finally {
+            getReplyPayloadMetadata(statusPayload)?.progressContinuation?.close();
+          }
+        })().catch((error: unknown) => {
+          settlementPromise = undefined;
+          throw error;
+        })),
+    };
+    opts?.onPendingContinuation?.(settlement);
   }
   await signalTypingIfNeeded(guardedReplyPayloads, typingSignals);
 
