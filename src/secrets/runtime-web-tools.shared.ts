@@ -65,8 +65,6 @@ type RuntimeWebProviderSelectionParams<
   defaults: SecretDefaults | undefined;
   /** Allow keyless providers to be selected when no provider is explicitly configured. */
   allowKeylessAutoSelect: boolean;
-  /** Defer keyless providers until credential-bearing auto-detect candidates are exhausted. */
-  deferKeylessFallback: boolean;
   /** Keep cold-start preparation alive when no configured provider ref can resolve. */
   allowUnavailableProviders?: boolean;
   onUnavailableProviders?: (error: RuntimeWebProviderUnavailableError) => void;
@@ -94,7 +92,6 @@ type RuntimeWebProviderSelectionParams<
     value: string;
   }) => void;
   inactivePathsForProvider: (provider: TProvider) => string[];
-  hasConfiguredSecretRef: (value: unknown, defaults: SecretDefaults | undefined) => boolean;
   mergeRuntimeMetadata?: (params: {
     provider: TProvider;
     metadata: TMetadata;
@@ -122,7 +119,7 @@ function pushInactiveProviderCredentialWarnings<
       config: params.selection.sourceConfig,
       toolConfig: params.selection.toolConfig,
     });
-    if (!params.selection.hasConfiguredSecretRef(value, params.selection.defaults)) {
+    if (!hasConfiguredSecretRef(value, params.selection.defaults)) {
       continue;
     }
     for (const path of params.selection.inactivePathsForProvider(provider)) {
@@ -152,10 +149,7 @@ function normalizeKnownProvider(
 /**
  * Returns whether a configured value or sibling ref field contains a SecretRef.
  */
-export function hasConfiguredSecretRef(
-  value: unknown,
-  defaults: SecretDefaults | undefined,
-): boolean {
+function hasConfiguredSecretRef(value: unknown, defaults: SecretDefaults | undefined): boolean {
   return Boolean(
     resolveSecretInputRef({
       value,
@@ -401,17 +395,11 @@ export async function resolveRuntimeWebProviderSelection<
     ): entry is UnresolvedProvider & { ref: SecretRef; refKey: string } =>
       Boolean(entry.ref && entry.refKey);
 
-    let keylessFallbackProvider: TProvider | undefined;
-
     for (const provider of candidates) {
       const contractDigest = resolveProviderContractDigest(provider.id);
       const isKeyless = provider.requiresCredential === false;
       if (isKeyless) {
         if (!params.configuredProvider && !params.allowKeylessAutoSelect) {
-          continue;
-        }
-        if (params.deferKeylessFallback && !params.configuredProvider) {
-          keylessFallbackProvider ||= provider;
           continue;
         }
       }
@@ -456,7 +444,7 @@ export async function resolveRuntimeWebProviderSelection<
         });
         if (
           fallback?.value !== undefined &&
-          params.hasConfiguredSecretRef(fallback.value, params.defaults)
+          hasConfiguredSecretRef(fallback.value, params.defaults)
         ) {
           const fallbackResolution = await params.resolveSecretInput({
             providerId: provider.id,
@@ -527,14 +515,6 @@ export async function resolveRuntimeWebProviderSelection<
         }
         break;
       }
-    }
-
-    if (!selectedProvider && keylessFallbackProvider && params.allowKeylessAutoSelect) {
-      selectedProvider = keylessFallbackProvider.id;
-      selectedResolution = {
-        source: "missing" as TSource,
-        secretRefConfigured: false,
-      };
     }
 
     const recordUnresolvedNoFallback = (unresolved: {
