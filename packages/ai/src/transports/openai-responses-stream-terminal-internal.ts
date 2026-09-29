@@ -231,9 +231,10 @@ export function createResponsesTerminalController(params: {
     params.outputs.set(item, contentIndex, outputIndex, true);
     stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
   };
-  const recoverTerminalOutput = (
+  const recoverTerminalOutput = async (
     items: ResponseOutputItem[],
     completeToolCall?: (outputIndex: number) => void,
+    onImageGeneration?: (item: ResponseOutputItem, outputIndex: number) => Promise<void>,
   ) => {
     let hasCompletedLaterOutput = false;
     for (const [outputIndex, item] of [...items.entries()].toReversed()) {
@@ -243,7 +244,11 @@ export function createResponsesTerminalController(params: {
         hasCompletedLaterOutput ||= tracked !== undefined;
         continue;
       }
-      if (item.type !== "message" && item.type !== "function_call") {
+      if (
+        item.type !== "message" &&
+        item.type !== "function_call" &&
+        !(item.type === "image_generation_call" && onImageGeneration)
+      ) {
         continue;
       }
       if (tracked) {
@@ -259,6 +264,11 @@ export function createResponsesTerminalController(params: {
       }
     }
     for (const [terminalIndex, item] of items.entries()) {
+      if (item.type === "image_generation_call") {
+        params.setLastTextBlock(null);
+        await onImageGeneration?.(item, terminalIndex);
+        continue;
+      }
       if (item.type === "message") {
         const tracked = params.outputs.get(item, terminalIndex);
         if (tracked?.completed) {
