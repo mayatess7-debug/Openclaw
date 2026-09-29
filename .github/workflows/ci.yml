@@ -6517,6 +6517,9 @@ jobs:
             -only-testing:OpenClawTests/CloudflareAccessSessionStoreTests
             -only-testing:OpenClawTests/ChatTypingFocusTests
             -only-testing:OpenClawTests/ChatSendHydrationTests
+            -only-testing:OpenClawTests/{SettingsHubTests,GatewayIngressControllerTests,GatewayAccessDeviceAuthBindingTests}
+            -only-testing:OpenClawTests/{GatewayConnectionControllerTests,GatewayConnectionSecurityTests,GatewaySettingsStoreTests}
+            -only-testing:OpenClawTests/{GatewayOperatorFleetTests,IOSMediaArtifactLoaderTests,OpenClawTypographyTests}
           )
           if [[ "$IOS_CI_PHASE" == "tests" ]]; then
             test_args+=(
@@ -6549,6 +6552,7 @@ jobs:
             -collect-test-diagnostics "$diagnostic_collection" \
             "${test_args[@]}" \
             test
+          python3 scripts/ios-access-restart-proof.py "${IOS_SIMULATOR_ID:?}"
           if [[ "$IOS_CI_PHASE" == "tests" && "$IOS_MAIN_TIER" != "true" ]]; then
             run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawWatchDeliveryUITests.log xcodebuild \
               -project apps/ios/OpenClaw.xcodeproj \
