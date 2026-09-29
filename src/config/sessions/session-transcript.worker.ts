@@ -266,10 +266,8 @@ serveOwnedWorkerTasks(
       if (request.kind === "session-store-target") {
         const { readSessionStoreTargetResult } =
           await import("./session-store-target-inventory.js");
-        const read = readSessionStoreTargetResult({
-          ...request.request,
-          env: cloneEnvWithPlatformSemantics(request.request.env),
-        });
+        request.request.env = cloneEnvWithPlatformSemantics(request.request.env);
+        const read = readSessionStoreTargetResult(request.request);
         if (!read.ok) {
           const readError = encodeSessionTranscriptWorkerError(read.error);
           if (!readError) {
@@ -282,11 +280,9 @@ serveOwnedWorkerTasks(
       if (request.kind === "session-exact-entries") {
         const { readExactSessionEntriesWithLifecycle } =
           await import("./session-entry-read.worker.js");
+        request.env = cloneEnvWithPlatformSemantics(request.env);
         return await withHistoryDatabase(request.database, request.kind, () =>
-          readExactSessionEntriesWithLifecycle({
-            ...request,
-            env: cloneEnvWithPlatformSemantics(request.env),
-          }),
+          readExactSessionEntriesWithLifecycle(request),
         );
       }
       if (request.kind === "session-row-facts") {
