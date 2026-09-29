@@ -592,6 +592,39 @@ describe("generateVoiceResponse", () => {
     expect(result.text).toBe("Fenced JSON works.");
   });
 
+  it("speaks a multi-paragraph spoken contract response", async () => {
+    const { result } = await runGenerateVoiceResponse([
+      { text: '{"spoken":"First paragraph.\n\nSecond paragraph.\n\nThird paragraph."}' },
+    ]);
+
+    expect(result.text).toBe("First paragraph. Second paragraph. Third paragraph.");
+  });
+
+  it("speaks every concatenated spoken block, with or without paragraphs", async () => {
+    const plainBlocks = '{"spoken":"Block one."}{"spoken":"Block two."}';
+    const paraBlocks = '{"spoken":"Block one.\n\nStill one."}{"spoken":"Block two.\n\nStill two."}';
+    const { result: plain } = await runGenerateVoiceResponse([{ text: plainBlocks }]);
+    const { result: paragraphs } = await runGenerateVoiceResponse([{ text: paraBlocks }]);
+
+    // Baseline returned only "Block one.": the inline scan was not global.
+    expect(plain.text).toBe("Block one. Block two.");
+    expect(paragraphs.text).toBe("Block one. Still one. Block two. Still two.");
+  });
+
+  it("speaks the whole reply when an undecodable block precedes a valid one", async () => {
+    const undecodable = '{"spoken":"Broken \\q block."}{"spoken":"Valid block."}';
+    const unscannable = '{"spoken":"Unscannable \\\nblock."}{"spoken":"Valid tail."}';
+    const { result: salvaged } = await runGenerateVoiceResponse([{ text: undecodable }]);
+    const { result: deferred } = await runGenerateVoiceResponse([{ text: unscannable }]);
+
+    // Baseline returned only "Valid block.": the first block failed to decode,
+    // was skipped, and the later valid block concealed the omission.
+    expect(salvaged.text).toBe("Broken q block. Valid block.");
+    // A declared block the scanner cannot match at all defers the whole reply to
+    // the plain-text path, punctuation and all, rather than the tail alone.
+    expect(deferred.text).toBe('{"spoken":"Unscannable \\ block."}{"spoken":"Valid tail."}');
+  });
+
   it("returns silence for an explicit empty spoken contract response", async () => {
     const { result } = await runGenerateVoiceResponse([{ text: '{"spoken":""}' }]);
 
