@@ -49,7 +49,7 @@ export function prepareCronStateWorkerCommand(type: PropertyKey): Promise<void> 
       maintenance = loaded;
     });
   }
-  if (type !== "cron.repairRun" || recovery) {
+  if (type !== "cron.repairRuns" || recovery) {
     return undefined;
   }
   return loadRecovery().then((loaded) => {
@@ -70,7 +70,7 @@ export function isCronStateWorkerCommand(command: {
     case "cron.removeStaleFamily":
     case "cron.loadMutable":
     case "cron.initializeRunReceipts":
-    case "cron.repairRun":
+    case "cron.repairRuns":
     case "cron.scheduleUnowned":
     case "cron.maintainHistory":
     case "cron.recordFailureAlertOutcome":
@@ -121,11 +121,11 @@ export function executeCronStateCommand(
       }
     case "cron.loadMutable":
       return loadMutableCronStoreInWorker(database, command.input.storeKey);
-    case "cron.repairRun":
+    case "cron.repairRuns":
       if (!recovery) {
         throw new Error("Cron recovery worker is not prepared");
       }
-      return recovery.repairCronRunInWorker(database, command.input);
+      return recovery.repairCronRunsInWorker(database, command.input);
     case "cron.scheduleUnowned":
     case "cron.maintainHistory":
     case "cron.recordFailureAlertOutcome":
