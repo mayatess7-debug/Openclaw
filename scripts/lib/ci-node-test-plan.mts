@@ -2981,9 +2981,8 @@ export function createVitestCacheWarmGroups(profile: "full" | "hybrid-hosted" = 
     // tooling tests or building the runtime. Ordinary CI still runs every test.
     return [
       {
-        configs: ["test/vitest/vitest.unit-fast.config.ts", "test/vitest/vitest.tooling.config.ts"],
+        configs: ["test/vitest/vitest.tooling.config.ts"],
         includePatterns: [
-          "src/commands/status.scan-result.test.ts",
           "test/scripts/ci-workflow-guards.test.ts",
           "test/scripts/ci-workflow-planning.test.ts",
           "test/scripts/ci-workflow-evidence.test.ts",
@@ -3644,7 +3643,8 @@ function splitOversizedCompactGroup(
   const buildModes = new Map(
     includePatterns?.map((file) => [file, resolveTestFilesBuildMode([file])]) ?? [],
   );
-  const packTooling = isTooling && runnerBackend === "github";
+  // Hybrid also reserves hosted retry costs; use the same spare-worker packing.
+  const packTooling = isTooling && (runnerBackend === "github" || runnerBackend === "hybrid");
   const agentsCoreFiles = isParallelAgentsCoreGroup(group)
     ? new Set(agentsCoreWorkFiles(group))
     : undefined;
@@ -5227,13 +5227,16 @@ function createCompactNodeTestShardBundles(
           estimateStripeSeconds(b) - estimateStripeSeconds(a) ||
           a.shard_name.localeCompare(b.shard_name),
       );
-    const bins = packNodeTestGroups(groups, (candidate, group) =>
-      admitsCompactBin(
-        [...candidate, group],
-        COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
-        estimateBinSeconds,
-        { parallel: true },
-      ),
+    const bins = packNodeTestGroups(
+      groups,
+      (candidate, group) =>
+        admitsCompactBin(
+          [...candidate, group],
+          COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
+          estimateBinSeconds,
+          { parallel: true },
+        ),
+      options.runnerBackend === "hybrid",
     );
     if (bins.length < parallelJobs.length) {
       parallelJobs.forEach((job, index) => {
