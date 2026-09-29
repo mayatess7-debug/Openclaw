@@ -9,7 +9,10 @@ import {
   setReplyPayloadMetadata,
   type ReplyPayload,
 } from "../reply-payload.js";
-import { resolveRoutedPolicyConversationType } from "./dispatch-from-config.context.js";
+import {
+  resolveRoutedPolicyConversationType,
+  resolveSessionStoreLookup,
+} from "./dispatch-from-config.context.js";
 import type { PluginBindingTranscriptOwner } from "./dispatch-from-config.events.js";
 import type { GatherDispatchRequestReadyState } from "./dispatch-from-config.gather.js";
 import { hasAskUserPayload } from "./dispatch-from-config.payloads.js";
@@ -108,16 +111,54 @@ export async function prepareDispatchDelivery(state: GatherDispatchRequestReadyS
         (typeof import("./reply-media-paths.runtime.js"))["createReplyMediaPathNormalizer"]
       >
     | undefined;
+  let replyMediaPermissionMode = sessionStoreEntry.entry?.permissionMode;
+  let replyMediaSessionRoot = sessionStoreEntry.entry?.sessionRoot;
+  let replyMediaSessionUpdatedAt = sessionStoreEntry.entry?.updatedAt;
   const getNormalizeReplyMediaPaths = async () => {
-    if (normalizeReplyMediaPaths) {
+    const mediaSessionContext = sessionStoreEntry.sessionKey
+      ? { ...ctx, SessionKey: sessionStoreEntry.sessionKey }
+      : ctx;
+    const currentEntry = resolveSessionStoreLookup(mediaSessionContext, cfg).entry;
+    const currentAuthorityUnavailable = Boolean(sessionStoreEntry.entry && !currentEntry);
+    const currentPermissionMode = currentEntry?.permissionMode;
+    const currentSessionRoot = currentEntry?.sessionRoot;
+    const currentSessionUpdatedAt = currentEntry?.updatedAt;
+    if (
+      normalizeReplyMediaPaths &&
+      currentPermissionMode === replyMediaPermissionMode &&
+      currentSessionRoot === replyMediaSessionRoot &&
+      currentSessionUpdatedAt === replyMediaSessionUpdatedAt
+    ) {
       return normalizeReplyMediaPaths;
     }
     const { createReplyMediaPathNormalizer } = await loadReplyMediaPathsRuntime();
+    replyMediaPermissionMode = currentPermissionMode;
+    replyMediaSessionRoot = currentSessionRoot;
+    replyMediaSessionUpdatedAt = currentSessionUpdatedAt;
     normalizeReplyMediaPaths = createReplyMediaPathNormalizer({
       cfg,
       agentId: state.sessionAgentId,
       sessionKey: state.acpDispatchSessionKey,
       workspaceDir: state.workspaceDir,
+      sessionWorkspaceDir:
+        currentPermissionMode && currentPermissionMode !== "full"
+          ? (currentSessionRoot ?? state.workspaceDir)
+          : undefined,
+      workspaceOnly: currentPermissionMode && currentPermissionMode !== "full" ? true : undefined,
+      allowHostWorkspace: currentAuthorityUnavailable ? false : undefined,
+      assertCommitAllowed: currentEntry
+        ? () => {
+            const latestEntry = resolveSessionStoreLookup(mediaSessionContext, cfg).entry;
+            if (
+              !latestEntry ||
+              latestEntry.permissionMode !== currentPermissionMode ||
+              latestEntry.sessionRoot !== currentSessionRoot ||
+              latestEntry.updatedAt !== currentSessionUpdatedAt
+            ) {
+              throw new Error("Session media authority changed during attachment staging.");
+            }
+          }
+        : undefined,
       messageProvider: deliveryChannel,
       accountId: replyContextAccountId,
       groupId,

@@ -20,13 +20,22 @@ import {
 } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
 import type { SandboxWorkspaceAccess } from "../../agents/sandbox/types.js";
+import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
 import { collectReplyMediaEntries } from "../../infra/outbound/reply-media-entries.js";
+import {
+  createBoundedOutboundMediaReadFile,
+  readOutboundMediaFile,
+} from "../../media/bounded-read-file.js";
 import { resolveOutboundMediaMaxBytes } from "../../media/configured-max-bytes.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
-import { HostReadMediaTypeError, LocalMediaAccessError } from "../../media/local-media-access.js";
+import {
+  assertLocalMediaAllowed,
+  HostReadMediaTypeError,
+  LocalMediaAccessError,
+} from "../../media/local-media-access.js";
 import { normalizeMediaReferenceForComparison } from "../../media/media-reference-comparison.js";
 import { resolveInboundMediaReference } from "../../media/media-reference.js";
 import { resolveOutboundAttachmentFromUrl } from "../../media/outbound-attachment.js";
@@ -150,6 +159,8 @@ export function createReplyMediaSourcePreparer(params: {
   workspaceMediaAccess?: OutboundMediaAccess;
   /** Physical remote alias of the captured logical workspace. */
   workspaceMediaRoot?: string;
+  /** Revalidates live session authority immediately before outbound staging. */
+  assertCommitAllowed?: () => void;
 }): (sources: readonly string[]) => Promise<PreparedReplyMedia> {
   // Prefer an explicit agentId so callers without a resolved sessionKey (e.g.
   // `openclaw agent --deliver` with `--reply-channel/--reply-to`) still get
@@ -209,12 +220,13 @@ export function createReplyMediaSourcePreparer(params: {
     media: string,
     sessionWorkspaceDir?: string,
     workspaceDir?: string,
-  ) =>
-    resolveAgentScopedOutboundMediaAccess({
+  ) => {
+    const effectiveSessionWorkspaceDir = sessionWorkspaceDir ?? params.sessionWorkspaceDir;
+    const mediaAccess = resolveAgentScopedOutboundMediaAccess({
       cfg: params.cfg,
       agentId,
       workspaceDir: workspaceDir ?? params.workspaceDir,
-      sessionWorkspaceDir: sessionWorkspaceDir ?? params.sessionWorkspaceDir,
+      sessionWorkspaceDir: effectiveSessionWorkspaceDir,
       workspaceOnly: params.workspaceOnly,
       allowHostWorkspace: params.allowHostWorkspace,
       mediaSources: [media],
@@ -231,6 +243,33 @@ export function createReplyMediaSourcePreparer(params: {
       groupChannel: params.groupChannel,
       groupSpace: params.groupSpace,
     });
+    if (!params.workspaceOnly || !effectiveSessionWorkspaceDir) {
+      return mediaAccess;
+    }
+    const sessionRoot = path.resolve(effectiveSessionWorkspaceDir);
+    const underlyingReadFile = mediaAccess.readFile;
+    const hasSessionRootGrant = mediaAccess.localRoots?.some(
+      (root) => path.resolve(root) === sessionRoot,
+    );
+    if (!underlyingReadFile && !hasSessionRootGrant) {
+      // Managed-only roots with no reader are an authoritative sender/group
+      // tool-policy denial. Never turn them into a new session-root grant.
+      return mediaAccess;
+    }
+    const readFile = underlyingReadFile
+      ? createBoundedOutboundMediaReadFile(async (filePath, options) => {
+          await assertLocalMediaAllowed(filePath, [sessionRoot]);
+          return await readOutboundMediaFile(underlyingReadFile, filePath, {
+            maxBytes: options?.maxBytes ?? Number.MAX_SAFE_INTEGER,
+          });
+        })
+      : undefined;
+    return {
+      localRoots: [sessionRoot],
+      ...(readFile ? { readFile } : {}),
+      workspaceDir: sessionRoot,
+    };
+  };
 
   const persistLocalReplyMedia = async (
     media: string,
@@ -253,6 +292,7 @@ export function createReplyMediaSourcePreparer(params: {
     }
     const persistPromise = resolveOutboundAttachmentFromUrl(media, maxBytes, {
       mediaAccess: resolveMediaAccessForSource(media, sessionWorkspaceDir, workspaceDir),
+      assertCommitAllowed: params.assertCommitAllowed,
     })
       .then((saved) => ({
         ...saved,
@@ -504,17 +544,42 @@ export function createReplyMediaPathNormalizer(
 
 export type ReplyMediaContext = {
   normalizePayload: (payload: ReplyPayload) => Promise<ReplyPayload>;
+  updateSessionPermissionMode: (mode: SessionEntry["permissionMode"] | null) => void;
 };
 
 export function createReplyMediaContext(
   params: Parameters<typeof createReplyMediaPathNormalizer>[0] & {
     mediaNormalizationOwner?: "gateway";
+    permissionMode?: SessionEntry["permissionMode"];
+    sessionRoot?: string;
   },
 ): ReplyMediaContext {
+  let permissionRevision = 0;
+  const createNormalizer = (mode: SessionEntry["permissionMode"] | undefined) => {
+    const preparedRevision = permissionRevision;
+    return createReplyMediaPathNormalizer({
+      ...params,
+      sessionWorkspaceDir:
+        mode && mode !== "full" ? (params.sessionRoot ?? params.workspaceDir) : undefined,
+      // Leave full/unset sessions undefined so stricter config remains authoritative.
+      workspaceOnly: mode && mode !== "full" ? true : undefined,
+      assertCommitAllowed: () => {
+        if (preparedRevision !== permissionRevision) {
+          throw new Error("Session media permission changed during attachment staging.");
+        }
+      },
+    });
+  };
+  let normalizePayload = createNormalizer(params.permissionMode);
   return {
-    normalizePayload:
+    normalizePayload: (payload) =>
       params.mediaNormalizationOwner === "gateway"
-        ? async (payload) => payload
-        : createReplyMediaPathNormalizer(params),
+        ? Promise.resolve(payload)
+        : normalizePayload(payload),
+    updateSessionPermissionMode: (mode) => {
+      // Rebuild the preparer so a narrower mode cannot reuse media staged under broader authority.
+      permissionRevision += 1;
+      normalizePayload = createNormalizer(mode ?? undefined);
+    },
   };
 }
