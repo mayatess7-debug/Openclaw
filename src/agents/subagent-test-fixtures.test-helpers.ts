@@ -5,6 +5,7 @@ import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.l
 import { notifyListeners, registerListener } from "../shared/listeners.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { AgentInternalEvent } from "./internal-events.js";
+import { SubagentRegistryWriteError } from "./subagents/registry/subagent-registry-persistence.js";
 import type { RegisterSubagentRunParams } from "./subagents/registry/subagent-registry-run-launch-record.js";
 import type * as RegistryPersistence from "./subagents/registry/subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagents/registry/subagent-registry.types.js";
@@ -65,18 +66,24 @@ export function createSubagentPersistenceMock(
     onSubagentRegistryPersisted: (listener: () => void) => registerListener(listeners, listener),
     persistSubagentRunsToDisk: publishAfter(methods.persistSubagentRunsToDisk),
     persistSubagentRunsToDiskOrThrow: publishAfter(methods.persistSubagentRunsToDiskOrThrow),
-    restoreSubagentRunsFromDisk: publishAfter(methods.restoreSubagentRunsFromDisk),
     persistSubagentRunsToDiskAsyncOrThrow: (async (runs, ids, options) => {
-      const snapshot = structuredClone(runs);
-      for (const runId of options.retireRunIds ?? []) {
-        snapshot.delete(runId);
+      let committed = false;
+      try {
+        const snapshot = structuredClone(runs);
+        for (const runId of options.retireRunIds ?? []) {
+          snapshot.delete(runId);
+        }
+        await Promise.resolve();
+        options.assertCurrent?.();
+        methods.persistSubagentRunsToDiskOrThrow(snapshot, ids);
+        committed = true;
+        options.onCommitted?.(ids);
+        notifyListeners(listeners, undefined);
+      } catch (error) {
+        throw new SubagentRegistryWriteError(committed ? "committed" : "not-committed", error);
       }
-      await Promise.resolve();
-      options.assertCurrent?.();
-      methods.persistSubagentRunsToDiskOrThrow(snapshot, ids);
-      options.onCommitted?.();
-      notifyListeners(listeners, undefined);
     }) satisfies typeof RegistryPersistence.persistSubagentRunsToDiskAsyncOrThrow,
+    restoreSubagentRunsFromDisk: publishAfter(methods.restoreSubagentRunsFromDisk),
   };
 }
 

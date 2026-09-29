@@ -33,7 +33,7 @@ export function createQueuedRegistrationFixture(mocks: {
             await Promise.resolve();
             authority.assertCurrent();
             syncRevision += 1;
-            callbacks.onCommitted?.();
+            callbacks.onCommitted?.(authority.currentRunIds());
             for (const listener of mocks.persisted) {
               listener();
             }
@@ -44,7 +44,7 @@ export function createQueuedRegistrationFixture(mocks: {
       const admittedRevision = syncRevision;
       const write: (typeof writes)[number] = {
         gate,
-        snapshot: structuredClone(runs),
+        snapshot: structuredClone(callbacks.snapshot ?? runs),
         assertCurrent: callbacks.assertCurrent,
       };
       writes.push(write);
@@ -55,7 +55,7 @@ export function createQueuedRegistrationFixture(mocks: {
       }
       return gate.promise.then(() => {
         if (syncRevision === admittedRevision) {
-          callbacks.onCommitted?.();
+          callbacks.onCommitted?.(runIds);
         }
         for (const listener of mocks.persisted) {
           listener();

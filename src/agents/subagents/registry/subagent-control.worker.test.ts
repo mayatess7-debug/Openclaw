@@ -67,7 +67,7 @@ it.each(["caller admission", "session generation"] as const)(
         const claim = runs.get(runId)?.killIntent;
         return nativeState.persistSubagentRunsToDiskAsyncOrThrow(runs, ids, {
           ...options,
-          onCommitted() {
+          onCommitted(committedRunIds) {
             if (claim && !retiredAfterAck) {
               retiredAfterAck = true;
               if (retirement === "caller admission") {
@@ -79,7 +79,7 @@ it.each(["caller admission", "session generation"] as const)(
                 );
               }
             }
-            options.onCommitted?.();
+            options.onCommitted?.(committedRunIds);
           },
         });
       },

@@ -87,7 +87,7 @@ function createRegistrationFixture() {
       }
       persist(...runIds);
       await Promise.resolve();
-      publication.onCommitted?.();
+      publication.onCommitted?.(runIds);
     },
     callGateway: async () => {
       throw new Error("Unexpected registration Gateway call");
@@ -260,7 +260,7 @@ it("settles an acknowledged queued launch failure through its captured native re
     publication.assertCurrent();
     persist(...runIds);
     await Promise.resolve();
-    publication.onCommitted?.();
+    publication.onCommitted?.(runIds);
   };
   const runId = "acknowledged-launch-failure";
   const childSessionKey = "agent:main:subagent:acknowledged-launch-failure";

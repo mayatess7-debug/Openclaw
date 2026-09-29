@@ -1,6 +1,7 @@
 import type { SqliteWalCheckpointSnapshot } from "../../infra/sqlite-wal-checkpoint.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "../../state/openclaw-agent-db-lease.js";
 import type {
+  SqliteArchiveReclamationPlan,
   SqliteSessionReclamationPlan,
   SqliteSessionReclamationResult,
 } from "./session-accessor.sqlite-lifecycle-types.js";
@@ -11,7 +12,7 @@ export type SqliteReclamationWorkerRequest = {
   type: "reclaim";
   operationId: number;
   commitGate: SharedArrayBuffer;
-  plan: SqliteSessionReclamationPlan;
+  plan: SqliteArchiveReclamationPlan;
   coordination: SqliteMutationWorkerCoordination;
 };
 export type SqliteReclamationWorkerCloseRequest = {
