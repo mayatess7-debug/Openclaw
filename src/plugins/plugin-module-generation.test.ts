@@ -913,6 +913,8 @@ describe("plugin module generations", () => {
     const first = load(root, "index.ts").value as { read(): Promise<unknown[]> };
     expect(await first.read()).toEqual([true, 1]);
     expect(await first.read()).toEqual([true, 2]);
+    // Unchanged source shares its capture; an edit starts a fresh emitted graph.
+    fs.appendFileSync(path.join(root, "index.ts"), "\n// next generation\n");
     expect(await (load(root, "index.ts").value as typeof first).read()).toEqual([true, 1]);
   });
 
@@ -1000,4 +1002,78 @@ describe("plugin module generations", () => {
       expect(() => a.read()).toThrow("reloaded or disabled");
     },
   );
+
+  it("shares one unchanged capture across live instances and recaptures edited source", async () => {
+    const root = temp.make("plugin-shared-capture-");
+    const source = path.join(root, "index.cjs");
+    fs.writeFileSync(
+      source,
+      'exports.filename = __filename; exports.read = () => require("./value.cjs");',
+    );
+    fs.writeFileSync(path.join(root, "value.cjs"), 'module.exports = "before";');
+    type Captured = { filename: string; read(): string };
+    // Republished registries load through fresh inventories, like the Gateway and agent runtime.
+    const bind = () => {
+      const instance = new PluginInstance("shared-capture-fixture");
+      withPluginCache(createPluginCache(), () =>
+        bindPluginInstanceModuleLoader({ instance, origin: "config", source, rootDir: root }),
+      );
+      return { instance, value: instance.loadModule(source) as Captured };
+    };
+    const gateway = bind();
+    const agent = bind();
+    instances.push(gateway.instance, agent.instance);
+    expect(agent.value.filename).toBe(gateway.value.filename);
+    expect(agent.instance.sourceDigest).toBe(gateway.instance.sourceDigest);
+
+    await gateway.instance.dispose();
+    expect(() => gateway.value.read()).toThrow("reloaded or disabled");
+    expect(fs.existsSync(agent.value.filename)).toBe(true);
+    expect(agent.value.read()).toBe("before");
+
+    fs.writeFileSync(path.join(root, "value.cjs"), 'module.exports = "edited";');
+    const edited = bind();
+    instances.push(edited.instance);
+    expect(edited.value.filename).not.toBe(agent.value.filename);
+    expect(edited.value.read()).toBe("edited");
+    expect(agent.value.read()).toBe("before");
+
+    await agent.instance.dispose();
+    expect(fs.existsSync(agent.value.filename)).toBe(false);
+    expect(fs.existsSync(edited.value.filename)).toBe(true);
+  });
+
+  it("recaptures unchanged source after a missing dependency is installed", () => {
+    const root = temp.make("plugin-late-dependency-");
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        name: "late-fixture",
+        optionalDependencies: { "late-dependency": "1.0.0" },
+      }),
+    );
+    const source = path.join(root, "index.cjs");
+    fs.writeFileSync(
+      source,
+      'exports.read = () => { try { return require("late-dependency"); } catch { return "missing"; } };',
+    );
+    const bind = () => {
+      const instance = new PluginInstance("late-dependency-fixture");
+      instances.push(instance);
+      withPluginCache(createPluginCache(), () =>
+        bindPluginInstanceModuleLoader({ instance, origin: "config", source, rootDir: root }),
+      );
+      return instance.loadModule(source) as { read(): string };
+    };
+    expect(bind().read()).toBe("missing");
+
+    const dependency = path.join(root, "node_modules/late-dependency");
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.writeFileSync(
+      path.join(dependency, "package.json"),
+      JSON.stringify({ name: "late-dependency", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(dependency, "index.js"), 'module.exports = "installed";');
+    expect(bind().read()).toBe("installed");
+  });
 });

@@ -38,7 +38,12 @@ import {
   capturedPluginModuleUrl,
   visitPluginSourceReferences,
 } from "./plugin-source-references.js";
-import { verifyPluginSourceInputs } from "./plugin-source-verification.js";
+import {
+  arePluginSourceInputsUnchanged,
+  verifyPluginSourceInputs,
+} from "./plugin-source-verification.js";
+
+export type PluginGenerationArtifact = ReturnType<typeof capturePluginGenerationArtifact>;
 
 /** Capture selective entries and whole dependencies without replacing earlier file bytes. */
 export function capturePluginGenerationArtifact(
@@ -604,6 +609,7 @@ export function capturePluginGenerationArtifact(
     additions.clear();
     const captures = [moduleCaptures, hardlinkedSources, metadataCapture, packages];
     const clearCaptures = () => captures.forEach((capture) => capture.clear());
+    let observedMissingModule = false;
     return {
       sourceRoot,
       rootDir: root,
@@ -633,6 +639,28 @@ export function capturePluginGenerationArtifact(
         captureNativeRecovery: () => nativeAdmission.captureRecovery(initialReceipt, sourceAliases),
       }),
       assertSourceCurrent,
+      /**
+       * Reuse gate: stat identities of every captured input, without rereading file bytes. A module
+       * observed missing may be installed later, which only a fresh capture can see.
+       */
+      isSourceUnchanged: () => {
+        if (observedMissingModule) {
+          return false;
+        }
+        try {
+          if (
+            fs.realpathSync(rootDir) !== sourceRoot ||
+            (entryFile && fs.realpathSync(entryFile) !== entry)
+          ) {
+            return false;
+          }
+          nativeAdmission.reconcileSourceInputs(inputs);
+        } catch {
+          return false;
+        }
+        return arePluginSourceInputsUnchanged(inputs) && nativeAdmission.namespacesAreCurrent();
+      },
+      nativeAdmissionState: nativeAdmission.state,
       moduleRoot: (filename: string) =>
         originalSources.has(filename) ? packageForFile(filename)?.capturedRoot : undefined,
       assertModuleAvailable,
@@ -668,10 +696,16 @@ export function capturePluginGenerationArtifact(
           return packageMap;
         }).value,
       captureModule: (importer: string, specifier: string, conditions: readonly string[]) => {
-        const result = captureAdmitted(() =>
-          moduleCaptures.get(importer)?.capture(specifier, conditions),
-        );
-        return result.value ? { ...result.value, additions: result.additions } : undefined;
+        try {
+          const result = captureAdmitted(() =>
+            moduleCaptures.get(importer)?.capture(specifier, conditions),
+          );
+          observedMissingModule ||= !result.value;
+          return result.value ? { ...result.value, additions: result.additions } : undefined;
+        } catch (error) {
+          observedMissingModule = true;
+          throw error;
+        }
       },
       captureResolvedModule: (filename: string) => {
         const known = capturedPaths.get(path.resolve(filename));
