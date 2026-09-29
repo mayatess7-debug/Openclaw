@@ -387,7 +387,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // a new session ID (empty transcript) each run, avoiding the cost of
   // sending the full conversation history (~100K tokens) to the LLM.
   // Delivery routing uses the selected conversation, not the fresh execution row.
-  const delivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+  const resolvedDelivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
     entry: conversationEntry,
@@ -403,7 +403,21 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // an explicit target that never resolves to a route also reports `target-none`.
   // Gate here so neither the relay prompt nor the session publication path can
   // see a projection target the resolver already declined to deliver to.
-  const internalProjection = delivery.reason === "target-none" ? undefined : projectionCandidate;
+  const internalProjection =
+    resolvedDelivery.reason === "target-none" ? undefined : projectionCandidate;
+  // A completion owned by an internal session (the same eligibility as the routeless
+  // projection above: Control UI/WebChat and other operator-owned internal sessions)
+  // answers in that session. The heartbeat target is for heartbeat output and must not
+  // capture it. Mixed batches keep the resolved route for their other events. If the
+  // session write fails, the events stay queued for a later wake; there is no channel
+  // fallback.
+  const sessionOwnedCompletion =
+    internalProjection !== undefined &&
+    preflight.pendingEventEntries.length > 0 &&
+    preflight.pendingEventEntries.every((event) => isExecCompletionEvent(event.text));
+  const delivery: typeof resolvedDelivery = sessionOwnedCompletion
+    ? { ...resolvedDelivery, channel: "none", to: undefined, reason: "session-owned-completion" }
+    : resolvedDelivery;
   // Routeless ambient polls are pure model burn, but only they may skip:
   // triggered wakes (hook/manual/cron/exec), polls with queued events, and
   // scheduled-task wakes must still run to process their payloads even when
