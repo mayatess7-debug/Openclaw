@@ -56,10 +56,7 @@ import {
 } from "../prepared-model-runtime.js";
 import { resolveProjectKey } from "../project-memory-scope.js";
 import { settleFailedRequesterRun, settleRequesterRun } from "../requester-run-settlement.js";
-import {
-  applyAgentRunSessionTargetIdentity,
-  resolveAgentRunSessionTarget,
-} from "../run-session-target.js";
+import { applyAgentRunSessionTargetIdentity } from "../run-session-target.js";
 import { resolveAgentRunErrorLifecycleFields } from "../run-termination.js";
 import { resolveSessionPlacementTurnSettlementAssertion } from "../session-placement-forced-terminal-settlement.js";
 import {
@@ -76,6 +73,7 @@ import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { createEmbeddedAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { runPreparedEmbeddedLoop } from "./run-loop.js";
+import { prepareRequiredRunSessionTarget } from "./run-required-session-target.js";
 import {
   createEmbeddedRunStageSummaryEmitter,
   createEmbeddedRunStageTracker,
@@ -155,9 +153,8 @@ async function runEmbeddedAgentInternal(
     ...paramsBase,
     sessionKey: effectiveSessionKey,
   });
-  const runSessionTarget = await resolveAgentRunSessionTarget({
+  const runSessionTarget = await prepareRequiredRunSessionTarget({
     ...paramsBase,
-    missingSessionKey: "create",
     sessionKey: effectiveSessionKey,
   });
   let params: RunEmbeddedAgentParamsWithSessionFile = withExecutionPhaseDiagnostics({
