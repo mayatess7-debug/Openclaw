@@ -250,6 +250,7 @@ export async function runConfigOperations(params: {
   operations: ConfigSetOperation[];
   options: ConfigMutationOptions;
   successMode: "set" | "patch";
+  beforePersistentApply?: () => void;
 }) {
   const { runtime, operations, options } = params;
   if (
@@ -392,6 +393,11 @@ export async function runConfigOperations(params: {
     writeOptions: {
       ...mutationStart.writeOptions,
       auditOrigin: "cli",
+      ...(params.beforePersistentApply
+        ? {
+            assertConfigMutationAuthority: params.beforePersistentApply,
+          }
+        : {}),
       ...(unsetPaths.length > 0 ? { unsetPaths } : {}),
       ...(normalizedExplicitSetPaths.length > 0
         ? { explicitSetPaths: normalizedExplicitSetPaths }
