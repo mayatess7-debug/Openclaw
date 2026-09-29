@@ -117,6 +117,8 @@ export type SpeechProviderPreparedSynthesis = {
 /** Voice metadata returned by provider list-voices hooks. */
 export type SpeechVoiceOption = {
   id: string;
+  /** Provider-owned identity classification; clients must not infer it from id prefixes. */
+  stored?: boolean;
   name?: string;
   category?: string;
   description?: string;
@@ -134,6 +136,62 @@ export type SpeechListVoicesRequest = {
   /** Core-resolved request timeout after config and provider defaults. */
   timeoutMs?: number;
 };
+
+/** Voice listing plus an incomplete-project marker when vendor listing failed. */
+export type SpeechListVoicesResult = SpeechVoiceOption[] & {
+  projectListingIncomplete?: boolean;
+};
+
+/** Provider request to store a prompted voice and return its preview clip. */
+export type SpeechDesignVoiceRequest = {
+  cfg?: OpenClawConfig;
+  providerConfig?: SpeechProviderConfig;
+  apiKey?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  displayName: string;
+  prompt: string;
+  languageCode?: string;
+  gender?: string;
+  model?: string;
+  /** Recheck live write authority immediately before irreversible provider I/O. */
+  assertCurrent?: () => void;
+};
+
+/** Stored voice id plus the provider's preview audio. */
+export type SpeechDesignVoiceResult =
+  | {
+      outcome?: "stored";
+      id: string;
+      name?: string;
+      previewAudio: Buffer;
+      mimeType: string;
+    }
+  | {
+      /** A non-idempotent write may have completed; callers must not retry it. */
+      outcome: "uncertain";
+      message: string;
+    };
+
+/** Provider request to store a replicated voice from two recordings. */
+export type SpeechReplicateVoiceRequest = {
+  cfg?: OpenClawConfig;
+  providerConfig?: SpeechProviderConfig;
+  apiKey?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  displayName: string;
+  sourceAudio: Buffer;
+  consentAudio: Buffer;
+  sourceMimeType?: string;
+  consentMimeType?: string;
+  model?: string;
+  /** Recheck live write authority immediately before irreversible provider I/O. */
+  assertCurrent?: () => void;
+};
+
+/** Stored replicated voice id plus the provider's preview audio. */
+export type SpeechReplicateVoiceResult = SpeechDesignVoiceResult;
 
 /** Provider hook input for resolving normalized config from raw OpenClaw config. */
 export type SpeechProviderResolveConfigContext = {

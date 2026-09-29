@@ -3,7 +3,10 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   ErrorCodes,
   errorShape,
+  validateTtsDesignVoiceParams,
+  validateTtsReplicateVoiceParams,
   validateTtsSpeakParams,
+  validateTtsVoicesParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import {
@@ -18,8 +21,11 @@ import {
 import { resolvePreparedTtsProvider } from "../../tts/tts-provider-resolution.js";
 import { resolveTtsSettingsSnapshot } from "../../tts/tts-settings.js";
 import {
+  designSpeechVoice,
   getTtsPersona,
+  replicateSpeechVoice,
   isTtsProviderConfigured,
+  listSpeechVoices,
   listTtsPersonas,
   resolveExplicitTtsOverrides,
   resolveTtsConfig,
@@ -31,11 +37,27 @@ import {
   synthesizeSpeech,
   textToSpeech,
 } from "../../tts/tts.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { formatForLog } from "../ws-log.js";
 import { respondUnavailableOnThrow } from "./response.js";
 import { inferSpeechMimeType } from "./speech-mime.js";
-import type { GatewayRequestHandler, GatewayRequestHandlers } from "./types.js";
+import type {
+  GatewayRequestHandler,
+  GatewayRequestHandlerOptions,
+  GatewayRequestHandlers,
+} from "./types.js";
 import { assertValidParams } from "./validation.js";
+
+function assertCurrentTtsWriteCaller(options: GatewayRequestHandlerOptions): void {
+  options.sessionMutationCommitGuard?.();
+  options.sessionMutationAuthorization?.assertCurrent();
+  options.signal?.throwIfAborted();
+  if (options.client?.invalidated || options.hasCurrentClientAuthority?.() === false) {
+    throw new SessionMutationAuthorizationChangedError(
+      errorShape(ErrorCodes.FORBIDDEN, "TTS voice-store caller is no longer authorized."),
+    );
+  }
+}
 
 function yieldBeforeTtsStatusSetup(): Promise<void> {
   return new Promise((resolve) => {
@@ -314,10 +336,135 @@ export const ttsHandlers: GatewayRequestHandlers = {
           id: candidate.id,
           name: candidate.label,
           configured: configuredByProvider.get(candidate.id) === true,
+          capabilities: {
+            designVoice: Boolean(candidate.designVoice),
+            replicateVoice: Boolean(candidate.replicateVoice),
+          },
           models: [...(candidate.models ?? [])],
           voices: [...(candidate.voices ?? [])],
         })),
         active: provider,
+      });
+    });
+  },
+  "tts.voices": async ({ params, respond, context }) => {
+    if (!assertValidParams(params, validateTtsVoicesParams, "tts.voices", respond)) {
+      return;
+    }
+    await respondUnavailableOnThrow(respond, async () => {
+      const cfg = context.getRuntimeConfig();
+      const provider = normalizeOptionalString(params.provider);
+      if (!provider) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "tts.voices requires provider"),
+        );
+        return;
+      }
+      const voices = await listSpeechVoices({ provider, cfg });
+      respond(true, {
+        provider,
+        voices,
+        ...(voices.projectListingIncomplete ? { projectListingIncomplete: true } : {}),
+      });
+    });
+  },
+  "tts.designVoice": async (options) => {
+    const { params, respond, context } = options;
+    if (!assertValidParams(params, validateTtsDesignVoiceParams, "tts.designVoice", respond)) {
+      return;
+    }
+    const displayName = normalizeOptionalString(params.displayName);
+    const prompt = normalizeOptionalString(params.prompt);
+    const provider = normalizeOptionalString(params.provider);
+    if (!provider || !displayName || !prompt) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "tts.designVoice requires provider, displayName, and prompt",
+        ),
+      );
+      return;
+    }
+    await respondUnavailableOnThrow(respond, async () => {
+      assertCurrentTtsWriteCaller(options);
+      const cfg = context.getRuntimeConfig();
+      const designed = await designSpeechVoice({
+        cfg,
+        provider,
+        displayName,
+        prompt,
+        languageCode: normalizeOptionalString(params.languageCode),
+        gender: normalizeOptionalString(params.gender),
+        model: normalizeOptionalString(params.modelId),
+        assertCurrent: () => assertCurrentTtsWriteCaller(options),
+      });
+      if (designed.outcome === "uncertain") {
+        respond(true, { provider, ...designed });
+        return;
+      }
+      respond(true, {
+        provider,
+        outcome: "stored",
+        id: designed.id,
+        name: designed.name,
+        mimeType: designed.mimeType,
+        audioBase64: designed.previewAudio.toString("base64"),
+      });
+    });
+  },
+  "tts.replicateVoice": async (options) => {
+    const { params, respond, context } = options;
+    if (
+      !assertValidParams(params, validateTtsReplicateVoiceParams, "tts.replicateVoice", respond)
+    ) {
+      return;
+    }
+    const displayName = normalizeOptionalString(params.displayName);
+    const provider = normalizeOptionalString(params.provider);
+    const sourceAudioBase64 = normalizeOptionalString(params.sourceAudioBase64);
+    const consentAudioBase64 = normalizeOptionalString(params.consentAudioBase64);
+    if (!provider || !displayName || !sourceAudioBase64 || !consentAudioBase64) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "tts.replicateVoice requires provider, displayName, sourceAudioBase64, and consentAudioBase64",
+        ),
+      );
+      return;
+    }
+    await respondUnavailableOnThrow(respond, async () => {
+      assertCurrentTtsWriteCaller(options);
+      const cfg = context.getRuntimeConfig();
+      const replicated = await replicateSpeechVoice({
+        cfg,
+        provider,
+        displayName,
+        sourceAudio: Buffer.from(sourceAudioBase64, "base64"),
+        consentAudio: Buffer.from(consentAudioBase64, "base64"),
+        sourceMimeType: normalizeOptionalString(params.sourceMimeType),
+        consentMimeType: normalizeOptionalString(params.consentMimeType),
+        model: normalizeOptionalString(params.modelId),
+        assertCurrent: () => assertCurrentTtsWriteCaller(options),
+      });
+      if (replicated.outcome === "uncertain") {
+        respond(true, { provider, ...replicated });
+        return;
+      }
+      respond(true, {
+        provider,
+        outcome: "stored",
+        id: replicated.id,
+        name: replicated.name,
+        mimeType: replicated.mimeType,
+        ...(replicated.previewAudio.length > 0
+          ? { audioBase64: replicated.previewAudio.toString("base64") }
+          : {}),
       });
     });
   },

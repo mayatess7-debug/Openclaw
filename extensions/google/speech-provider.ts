@@ -15,7 +15,9 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveGoogleEnvApiKey } from "./gemini-auth.js";
 import type { GoogleGenerateContentResponse } from "./generate-content-response.js";
+import { googleSpeechPcm } from "./speech-audio.js";
 import { GOOGLE_PREBUILT_VOICES } from "./voice-catalog.js";
+import { createGoogleSpeechVoiceMethods } from "./voices.js";
 
 // Implicit default stays on the generateContent path; Gemini 3.8 is an explicit opt-in.
 const DEFAULT_GOOGLE_TTS_MODEL = "gemini-3.1-flash-tts-preview";
@@ -166,7 +168,7 @@ function resolveGoogleTtsApiKey(params: {
 
 function resolveGoogleTtsBaseUrl(params: {
   cfg?: OpenClawConfig;
-  providerConfig: GoogleTtsProviderConfig;
+  providerConfig: Pick<GoogleTtsProviderConfig, "baseUrl">;
 }): string | undefined {
   return (
     params.providerConfig.baseUrl ??
@@ -385,26 +387,6 @@ function prepareGoogleInteractionsSynthesis(text: string): { text: string } | un
   return transcript ? { text: transcript } : undefined;
 }
 
-function stripWavContainerToPcm(audio: Buffer): Buffer {
-  if (
-    audio.subarray(0, 4).toString("ascii") !== "RIFF" ||
-    audio.subarray(8, 12).toString("ascii") !== "WAVE"
-  ) {
-    return audio;
-  }
-  let offset = 12;
-  while (offset + 8 <= audio.length) {
-    const chunkId = audio.subarray(offset, offset + 4).toString("ascii");
-    const chunkSize = audio.readUInt32LE(offset + 4);
-    const dataStart = offset + 8;
-    if (chunkId === "data") {
-      return audio.subarray(dataStart, Math.min(dataStart + chunkSize, audio.length));
-    }
-    offset = dataStart + chunkSize + (chunkSize % 2);
-  }
-  throw new Error("Google TTS WAV response missing PCM data");
-}
-
 function readGoogleInteractionsAudioData(
   payload: GoogleInteractionsSpeechResponse,
 ): string | undefined {
@@ -521,11 +503,9 @@ async function synthesizeGoogleTtsPcmOnce(params: {
           generationConfig: {
             responseModalities: ["AUDIO"],
             speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: params.voiceName,
-                },
-              },
+              voiceConfig: params.voiceName.startsWith("voice_")
+                ? { voice: params.voiceName }
+                : { prebuiltVoiceConfig: { voiceName: params.voiceName } },
             },
           },
         },
@@ -565,7 +545,8 @@ async function synthesizeGoogleTtsPcmOnce(params: {
       if (!canonicalAudio) {
         throw new Error("Google TTS response returned malformed base64 audio data");
       }
-      return stripWavContainerToPcm(Buffer.from(canonicalAudio, "base64"));
+      const audio = Buffer.from(canonicalAudio, "base64");
+      return googleSpeechPcm(audio);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new GoogleTtsRetryableError(message);
@@ -652,7 +633,11 @@ export function buildGoogleSpeechProvider(): SpeechProviderPlugin {
         ? {}
         : { model: normalizeGoogleTtsModel(params.modelId) }),
     }),
-    listVoices: async () => GOOGLE_PREBUILT_VOICES.map((voice) => ({ id: voice, name: voice })),
+    ...createGoogleSpeechVoiceMethods({
+      readConfig: readGoogleTtsProviderConfig,
+      resolveApiKey: resolveGoogleTtsApiKey,
+      resolveBaseUrl: resolveGoogleTtsBaseUrl,
+    }),
     isConfigured: ({ cfg, providerConfig }) =>
       Boolean(resolveGoogleTtsApiKey({ cfg, providerConfig })),
     prepareSynthesis: (ctx) => {

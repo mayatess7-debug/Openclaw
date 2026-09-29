@@ -31,13 +31,16 @@ beforeAll(async () => {
 
 installProviderHttpMockCleanup();
 
-function googleTtsResponse(audio: Buffer | string = Buffer.from([1, 0, 2, 0])) {
+function googleTtsResponse(
+  audio: Buffer | string = Buffer.from([1, 0, 2, 0]),
+  mimeType = "audio/L16;codec=pcm;rate=24000",
+) {
   const data = typeof audio === "string" ? audio : audio.toString("base64");
   return Response.json({
     steps: [
       {
         type: "model_output",
-        content: [{ type: "audio", mime_type: "audio/l16", data }],
+        content: [{ type: "audio", mime_type: mimeType, data }],
       },
     ],
     candidates: [
@@ -46,7 +49,7 @@ function googleTtsResponse(audio: Buffer | string = Buffer.from([1, 0, 2, 0])) {
           parts: [
             {
               inlineData: {
-                mimeType: "audio/L16;codec=pcm;rate=24000",
+                mimeType,
                 data,
               },
             },
@@ -168,6 +171,78 @@ describe("Google speech provider", () => {
     expect(result.audioBuffer.subarray(44)).toEqual(Buffer.from([1, 0, 2, 0]));
     expect(transcodeAudioBufferToOpusMock).not.toHaveBeenCalled();
   });
+
+  it("normalizes Gemini 3.8 WAV responses before file and telephony playback", async () => {
+    // A PCM WAV with a padded metadata chunk: data need not begin at byte 44.
+    const wav = Buffer.alloc(58);
+    wav.write("RIFF");
+    wav.writeUInt32LE(50, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(24_000, 24);
+    wav.writeUInt32LE(48_000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("JUNK", 36);
+    wav.writeUInt32LE(1, 40);
+    wav[44] = 7;
+    wav.write("data", 46);
+    wav.writeUInt32LE(4, 50);
+    const pcm = Buffer.from([1, 0, 2, 0]);
+    pcm.copy(wav, 54);
+    postJsonRequestMock.mockImplementation(async () => ({
+      response: googleTtsResponse(wav, "audio/wav"),
+      release: vi.fn(async () => {}),
+    }));
+    const provider = buildGoogleSpeechProvider();
+    const request = {
+      text: "Hello",
+      cfg: {},
+      providerConfig: {
+        apiKey: "test-key",
+        model: "gemini-3.8-flash-tts",
+        voiceName: "voice_fixture",
+      },
+      timeoutMs: 8_000,
+    };
+    const file = await provider.synthesize({ ...request, target: "audio-file" });
+    expect(file.audioBuffer.subarray(44)).toEqual(pcm);
+    const phone = await provider.synthesizeTelephony!({ ...request });
+    expect(phone.audioBuffer).toEqual(pcm);
+  });
+
+  it.each(["gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"])(
+    "preserves selected %s for stored-voice playback",
+    async (model) => {
+      const requestMock = installGoogleTtsRequestMock();
+      await buildGoogleSpeechProvider().synthesize({
+        text: "Stored voice playback.",
+        cfg: {},
+        providerConfig: { apiKey: "test-key", model, voiceName: "voice_fixture" },
+        target: "audio-file",
+        timeoutMs: 8000,
+      });
+      const request = requireFirstRecordArg(requestMock, "Stored voice playback request");
+      if (model.startsWith("gemini-3.8")) {
+        expect(request.url).toBe("https://generativelanguage.googleapis.com/v1beta/interactions");
+        expect(request.body).toMatchObject({
+          model,
+          store: false,
+          response_format: { mime_type: "audio/l16", sample_rate: 24000 },
+          generation_config: { speech_config: [{ voice: "voice_fixture" }] },
+        });
+      } else {
+        expect(request.url).toBe(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent",
+        );
+        expect(request.body).toMatchObject({
+          generationConfig: { speechConfig: { voiceConfig: { voice: "voice_fixture" } } },
+        });
+      }
+    },
+  );
 
   it("bounds oversized Gemini TTS success JSON responses and cancels the stream", async () => {
     let cancelCount = 0;
@@ -650,6 +725,8 @@ describe("Google speech provider", () => {
   });
 
   it("lists Gemini prebuilt TTS voices", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "");
+    vi.stubEnv("GOOGLE_API_KEY", "");
     const provider = buildGoogleSpeechProvider();
 
     const voices = await provider.listVoices?.({ providerConfig: {} });
@@ -917,6 +994,10 @@ describe("Google speech provider", () => {
       pcm,
     ]);
     wav.writeUInt32LE(wav.length - 8, 4);
+    wav.writeUInt32LE(24_000, 24);
+    wav.writeUInt32LE(48_000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
     postJsonRequestMock.mockImplementation(async () => ({
       response: Response.json({
         steps: [

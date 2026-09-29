@@ -1,0 +1,268 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { getRuntimeConfig } from "../../config/config.js";
+import { callGateway } from "../../gateway/call.js";
+import { buildGatewayConnectionDetailsWithResolvers } from "../../gateway/connection-details.js";
+import { isLoopbackHost } from "../../gateway/net.js";
+import {
+  designSpeechVoice,
+  getTtsProvider,
+  replicateSpeechVoice,
+  resolveTtsConfig,
+  resolveTtsPrefsPath,
+} from "../../tts/tts.js";
+import { getTtsCommandSecretTargetIds } from "../command-secret-targets.js";
+import { publishOutputFileAtomically } from "../media-output.js";
+import type { CapabilityTransport } from "./metadata.js";
+import { pinRuntimeConfigSnapshot, resolveLocalCapabilityRuntimeConfig } from "./shared.js";
+import { injectTtsAuthProfileApiKey } from "./tts-runtime.js";
+
+function storedVoicePreviewOutputs(input: {
+  target: string;
+  audio: Buffer;
+  mimeType?: string;
+}): Array<{ path: string; format: string }> {
+  if (!input.target || input.audio.length === 0) {
+    return [];
+  }
+  return [{ path: input.target, format: input.mimeType ?? "audio/wav" }];
+}
+
+async function writePreviewAudio(target: string, audio: Buffer): Promise<void> {
+  await publishOutputFileAtomically({
+    filePath: target,
+    writeTemp: async (tempPath) => {
+      await fs.writeFile(tempPath, audio);
+    },
+  });
+}
+
+function mimeTypeFromAudioPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".mp3") {
+    return "audio/mpeg";
+  }
+  if (ext === ".ogg" || ext === ".oga") {
+    return "audio/ogg";
+  }
+  if (ext === ".m4a" || ext === ".mp4") {
+    return "audio/mp4";
+  }
+  if (ext === ".webm") {
+    return "audio/webm";
+  }
+  return "audio/wav";
+}
+
+export async function runTtsDesignVoice(params: {
+  provider?: string;
+  displayName: string;
+  prompt: string;
+  languageCode?: string;
+  gender?: string;
+  model?: string;
+  output: string;
+  transport: CapabilityTransport;
+}) {
+  const target = path.resolve(params.output);
+  if (params.transport === "gateway") {
+    const gatewayConnection = buildGatewayConnectionDetailsWithResolvers({
+      config: getRuntimeConfig(),
+    });
+    if (!isLoopbackHost(new URL(gatewayConnection.url).hostname)) {
+      throw new Error(
+        `--output is not supported for remote gateway voice design yet (gateway target: ${gatewayConnection.url}).`,
+      );
+    }
+    const result: {
+      outcome?: "uncertain";
+      message?: string;
+      provider?: string;
+      id?: string;
+      name?: string;
+      mimeType?: string;
+      audioBase64?: string;
+    } = await callGateway({
+      method: "tts.designVoice",
+      params: {
+        provider: normalizeOptionalString(params.provider),
+        displayName: params.displayName,
+        prompt: params.prompt,
+        languageCode: params.languageCode,
+        gender: params.gender,
+        modelId: params.model,
+      },
+      timeoutMs: 120_000,
+    });
+    if (result.outcome === "uncertain") {
+      throw new Error(result.message ?? "Voice store outcome is uncertain; do not retry.");
+    }
+    const audio = Buffer.from(result.audioBase64 ?? "", "base64");
+    if (!result.id || audio.length === 0) {
+      throw new Error("Gateway voice design did not return a voice id and preview");
+    }
+    await writePreviewAudio(target, audio);
+    return {
+      ok: true,
+      capability: "tts.designVoice",
+      transport: "gateway" as const,
+      provider: result.provider,
+      id: result.id,
+      name: result.name,
+      outputs: [{ path: target, format: result.mimeType ?? "audio/wav" }],
+    };
+  }
+  let cfg = await resolveLocalCapabilityRuntimeConfig({
+    commandName: "infer tts design",
+    targetIds: getTtsCommandSecretTargetIds(),
+  });
+  const config = resolveTtsConfig(cfg);
+  const provider =
+    normalizeOptionalString(params.provider) ?? getTtsProvider(config, resolveTtsPrefsPath(config));
+  cfg = await prepareStoredVoiceAuth(cfg, provider);
+  const designed = await designSpeechVoice({
+    cfg,
+    provider,
+    displayName: params.displayName,
+    prompt: params.prompt,
+    languageCode: params.languageCode,
+    gender: params.gender,
+    model: params.model,
+  });
+  if (designed.outcome === "uncertain") {
+    throw new Error(designed.message);
+  }
+  await writePreviewAudio(target, designed.previewAudio);
+  return {
+    ok: true,
+    capability: "tts.designVoice",
+    transport: "local" as const,
+    provider,
+    id: designed.id,
+    name: designed.name,
+    outputs: [{ path: target, format: designed.mimeType }],
+  };
+}
+
+export async function runTtsReplicateVoice(params: {
+  provider?: string;
+  displayName: string;
+  source: string;
+  consent: string;
+  model?: string;
+  output?: string;
+  transport: CapabilityTransport;
+}) {
+  const target = params.output ? path.resolve(params.output) : "";
+  const sourcePath = path.resolve(params.source);
+  const consentPath = path.resolve(params.consent);
+  const sourceAudio = await fs.readFile(sourcePath);
+  const consentAudio = await fs.readFile(consentPath);
+  const sourceMimeType = mimeTypeFromAudioPath(sourcePath);
+  const consentMimeType = mimeTypeFromAudioPath(consentPath);
+  if (params.transport === "gateway") {
+    const gatewayConnection = buildGatewayConnectionDetailsWithResolvers({
+      config: getRuntimeConfig(),
+    });
+    if (params.output && !isLoopbackHost(new URL(gatewayConnection.url).hostname)) {
+      throw new Error(
+        `--output is not supported for remote gateway voice replication yet (gateway target: ${gatewayConnection.url}).`,
+      );
+    }
+    const result: {
+      outcome?: "uncertain";
+      message?: string;
+      provider?: string;
+      id?: string;
+      name?: string;
+      mimeType?: string;
+      audioBase64?: string;
+    } = await callGateway({
+      method: "tts.replicateVoice",
+      params: {
+        provider: normalizeOptionalString(params.provider),
+        displayName: params.displayName,
+        sourceAudioBase64: sourceAudio.toString("base64"),
+        consentAudioBase64: consentAudio.toString("base64"),
+        sourceMimeType,
+        consentMimeType,
+        modelId: params.model,
+      },
+      timeoutMs: 120_000,
+    });
+    if (result.outcome === "uncertain") {
+      throw new Error(result.message ?? "Voice store outcome is uncertain; do not retry.");
+    }
+    if (!result.id) {
+      throw new Error("Gateway voice replication did not return a voice id");
+    }
+    const audio = Buffer.from(result.audioBase64 ?? "", "base64");
+    const outputs = storedVoicePreviewOutputs({
+      target,
+      audio,
+      mimeType: result.mimeType,
+    });
+    if (outputs[0]) {
+      await writePreviewAudio(outputs[0].path, audio);
+    }
+    return {
+      ok: true,
+      capability: "tts.replicateVoice",
+      transport: "gateway" as const,
+      provider: result.provider,
+      id: result.id,
+      name: result.name,
+      outputs,
+    };
+  }
+  let cfg = await resolveLocalCapabilityRuntimeConfig({
+    commandName: "infer tts replicate",
+    targetIds: getTtsCommandSecretTargetIds(),
+  });
+  const config = resolveTtsConfig(cfg);
+  const provider =
+    normalizeOptionalString(params.provider) ?? getTtsProvider(config, resolveTtsPrefsPath(config));
+  cfg = await prepareStoredVoiceAuth(cfg, provider);
+  const replicated = await replicateSpeechVoice({
+    cfg,
+    provider,
+    displayName: params.displayName,
+    sourceAudio,
+    consentAudio,
+    sourceMimeType,
+    consentMimeType,
+    model: params.model,
+  });
+  if (replicated.outcome === "uncertain") {
+    throw new Error(replicated.message);
+  }
+  const outputs = storedVoicePreviewOutputs({
+    target,
+    audio: replicated.previewAudio,
+    mimeType: replicated.mimeType,
+  });
+  if (outputs[0]) {
+    await writePreviewAudio(outputs[0].path, replicated.previewAudio);
+  }
+  return {
+    ok: true,
+    capability: "tts.replicateVoice",
+    transport: "local" as const,
+    provider,
+    id: replicated.id,
+    name: replicated.name,
+    outputs,
+  };
+}
+
+async function prepareStoredVoiceAuth(
+  cfg: Parameters<typeof injectTtsAuthProfileApiKey>[0]["cfg"],
+  provider: string,
+) {
+  const hydrated = await injectTtsAuthProfileApiKey({ cfg, provider });
+  if (hydrated !== cfg) {
+    pinRuntimeConfigSnapshot(hydrated);
+  }
+  return hydrated;
+}
