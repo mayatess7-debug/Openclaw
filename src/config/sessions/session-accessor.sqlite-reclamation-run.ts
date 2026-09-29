@@ -138,7 +138,6 @@ export async function runSqliteSessionReclamation(params: {
             return reclaimSqliteSessionInTransaction(params.plan, {
               beforeMutation: params.assertCommitAllowed,
               onCommit: (database, result) => {
-                params.assertCommitAllowed?.();
                 assertSessionSubagentRunsCurrent(params.plan, params.plan.databaseOptions.env);
                 const publish = prepareReclamationPublication(
                   params.plan,
@@ -349,6 +348,10 @@ async function runPreparedSqliteSessionReclamation(
                     agentId: plan.databaseOptions.agentId,
                     storePath: owner.nativeLocation,
                     databaseIdentity: identity,
+                    removedSessionKeys:
+                      completed.kind === "lifecycle-projection-commit"
+                        ? completed.value.removedSessionKeys
+                        : [],
                   },
                   collectReclamationChangedSessionKeys(plan, completed),
                   () => {
