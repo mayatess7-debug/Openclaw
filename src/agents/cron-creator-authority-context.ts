@@ -79,6 +79,7 @@ export function bindRequesterYieldCronAuthority(
   const authority = getGatewayToolCallerIdentity()?.approvalAuthority;
   if (
     !scope?.managementEntitlement ||
+    scope.managementEntitlement.source === "failure-repair" ||
     scope.runId !== runId ||
     !authority ||
     authority.operationalRunInstance.runId !== runId
@@ -120,6 +121,8 @@ export function captureActiveCronManagementAuthority(params: {
   const sessionId = context?.sessionId;
   if (
     !scope?.managementEntitlement ||
+    // A failure repair is bound to its own run; delegated continuations do not inherit it.
+    scope.managementEntitlement.source === "failure-repair" ||
     scope.runId !== params.runId ||
     caller?.sessionKey !== params.sessionKey ||
     caller.agentId !== params.agentId ||
@@ -238,7 +241,7 @@ export function bindCronManagementGrant(runId: string | undefined) {
     !scope.active ||
     scope.signal.aborted ||
     scope.isCurrent?.() === false ||
-    (scope.managementEntitlement.source === "channel-owner" &&
+    (scope.managementEntitlement.source !== "control-ui-admin" &&
       !scope.managementEntitlement.isCurrent()) ||
     scope.runId !== runId ||
     !authority ||
@@ -250,6 +253,10 @@ export function bindCronManagementGrant(runId: string | undefined) {
   const managementOnly = scope.callerOrigin.kind === "unknown" && !scope.callerScopedCreation;
   return {
     managementOnly,
+    failureRepairJobId:
+      scope.managementEntitlement.source === "failure-repair"
+        ? scope.managementEntitlement.jobId
+        : undefined,
     mint: (method: string, signal?: AbortSignal) => {
       if (!CRON_MANAGEMENT_METHODS.some((allowed) => allowed === method)) {
         if (managementOnly) {
