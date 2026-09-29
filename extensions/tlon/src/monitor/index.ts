@@ -35,6 +35,7 @@ import { sendDm, sendGroupMessage } from "../urbit/send.js";
 import { UrbitSSEClient } from "../urbit/sse-client.js";
 import { createTlonApprovalRuntime } from "./approval-runtime.js";
 import {
+  createAuthenticatedDmApproval,
   createPendingApproval,
   isAdminCommand,
   isApprovalResponse,
@@ -1010,16 +1011,11 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
         });
       if (!ownerDm && !(await resolveChannelIngress()).senderAccess.allowed) {
         if (effectiveOwnerShip) {
-          const approval = createPendingApproval({
-            type: "dm",
-            requestingShip: senderShip,
-            messagePreview: sliceUtf16Safe(messageText, 0, 100),
-            originalMessage: {
-              messageId,
-              messageText,
-              messageContent: essay.content,
-              timestamp: asFiniteNumber(essay?.sent) ?? Date.now(),
-            },
+          const approval = createAuthenticatedDmApproval(senderShip, {
+            messageId,
+            messageText,
+            messageContent: essay.content,
+            timestamp: asFiniteNumber(essay?.sent) ?? Date.now(),
           });
           await queueApprovalRequest(approval);
         } else {

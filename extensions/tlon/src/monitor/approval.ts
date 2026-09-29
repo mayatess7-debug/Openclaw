@@ -42,6 +42,18 @@ export function createPendingApproval(
   };
 }
 
+export function createAuthenticatedDmApproval(
+  requestingShip: string,
+  originalMessage: Omit<NonNullable<PendingApproval["originalMessage"]>, "authenticatedSenderShip">,
+): PendingApproval {
+  return createPendingApproval({
+    type: "dm",
+    requestingShip,
+    messagePreview: sliceUtf16Safe(originalMessage.messageText, 0, 100),
+    originalMessage: { ...originalMessage, authenticatedSenderShip: requestingShip },
+  });
+}
+
 /**
  * Truncate text to a maximum length with ellipsis.
  */

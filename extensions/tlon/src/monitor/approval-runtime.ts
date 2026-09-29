@@ -19,6 +19,20 @@ type TlonApprovalApi = Pick<UrbitSSEClient, "poke" | "scry">;
 
 type ApprovedMessageProcessor = (approval: PendingApproval) => Promise<void>;
 
+function canReplayApprovedMessage(approval: PendingApproval): boolean {
+  if (approval.type !== "dm" || !approval.originalMessage) {
+    return true;
+  }
+  const recordedSender = approval.originalMessage.authenticatedSenderShip;
+  if (typeof recordedSender !== "string") {
+    return false;
+  }
+  const authenticatedSender = normalizeShip(recordedSender);
+  return (
+    authenticatedSender.length > 0 && authenticatedSender === normalizeShip(approval.requestingShip)
+  );
+}
+
 export function createTlonApprovalRuntime(params: {
   api: TlonApprovalApi;
   runtime: RuntimeEnv;
@@ -225,11 +239,15 @@ export function createTlonApprovalRuntime(params: {
       switch (approval.type) {
         case "dm":
           await addToDmAllowlist(approval.requestingShip);
-          if (approval.originalMessage) {
+          if (approval.originalMessage && canReplayApprovedMessage(approval)) {
             runtime.log?.(
               `[tlon] Processing original message from ${approval.requestingShip} after approval`,
             );
             await processApprovedMessage(approval);
+          } else if (approval.originalMessage) {
+            runtime.log?.(
+              `[tlon] Skipping legacy DM replay for ${approval.requestingShip}: authenticated sender provenance is unavailable; a fresh DM is required`,
+            );
           }
           break;
         case "channel":
