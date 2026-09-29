@@ -875,7 +875,9 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
   let activeBootId: string | undefined;
   let bootRecorded = false;
   let triageAttempted = false;
-  const triageStartupFailure = async (error: unknown, signal?: AbortSignal) => {
+  // Resolves true only when a repair fixer was actually dispatched, which
+  // authorizes the run loop to retry startup once (issue #159539).
+  const triageStartupFailure = async (error: unknown, signal?: AbortSignal): Promise<boolean> => {
     if (
       triageAttempted ||
       !bootRecorded ||
@@ -890,7 +892,7 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
       ) ||
       resolveGatewayStartupMaintenanceReason(error)
     ) {
-      return;
+      return false;
     }
     // Unconfirmed startup cleanup retains its generation; never overlap it with a fixer.
     // Supervised retries reuse the persisted breaker transition to avoid agent storms.
@@ -898,10 +900,10 @@ async function runGatewayCommandOnce(opts: GatewayRunOpts, hooks: GatewayRunRunt
       (supervisor || process.env.OPENCLAW_SERVICE_MARKER) &&
       !crashLoopDecision?.shouldWriteStabilityBundle
     ) {
-      return;
+      return false;
     }
     triageAttempted = true;
-    await triageGatewayStartupFailure(defaultRuntime, error, signal);
+    return await triageGatewayStartupFailure(defaultRuntime, error, signal);
   };
   const beginBoot = async (startedAtMs: number) => {
     // run-loop calls beginBoot before every startGatewayServer invocation, so
