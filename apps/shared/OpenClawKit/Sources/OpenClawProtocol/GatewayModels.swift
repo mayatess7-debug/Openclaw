@@ -18771,6 +18771,7 @@ public struct SessionsSearchResult: Codable, Sendable {
     public let sessions: [SessionRow]?
     public let indexing: Bool?
     public let archivedtranscriptsexcluded: Int?
+    public let deletedtranscriptsexcluded: Int?
     public let truncated: Bool?
 
     public init(
@@ -18778,12 +18779,14 @@ public struct SessionsSearchResult: Codable, Sendable {
         sessions: [SessionRow]? = nil,
         indexing: Bool? = nil,
         archivedtranscriptsexcluded: Int? = nil,
+        deletedtranscriptsexcluded: Int? = nil,
         truncated: Bool? = nil)
     {
         self.results = results
         self.sessions = sessions
         self.indexing = indexing
         self.archivedtranscriptsexcluded = archivedtranscriptsexcluded
+        self.deletedtranscriptsexcluded = deletedtranscriptsexcluded
         self.truncated = truncated
     }
 
@@ -18792,6 +18795,7 @@ public struct SessionsSearchResult: Codable, Sendable {
         case sessions
         case indexing
         case archivedtranscriptsexcluded = "archivedTranscriptsExcluded"
+        case deletedtranscriptsexcluded = "deletedTranscriptsExcluded"
         case truncated
     }
 }
