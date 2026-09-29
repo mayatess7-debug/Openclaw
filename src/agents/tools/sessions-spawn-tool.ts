@@ -63,6 +63,7 @@ import {
   resolveEffectiveSessionToolsVisibility,
   resolveSandboxedSessionToolContext,
 } from "./sessions-helpers.js";
+import { describeSessionsSpawnAgentId } from "./sessions-spawn-agent-id.js";
 import {
   maybeSpawnVisibleSession,
   type VisibleSessionsSpawnDeps,
@@ -155,6 +156,7 @@ function createSessionsSpawnToolSchema(params: {
   threadAvailable: boolean;
   subagentThreadAvailable: boolean;
   swarmEnabled: boolean;
+  agentIdDescription: string;
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
@@ -180,7 +182,7 @@ function createSessionsSpawnToolSchema(params: {
       params.acpAvailable ? SESSIONS_SPAWN_RUNTIMES : (["subagent"] as const),
       { description: 'Runtime; visible=true requires "subagent".' },
     ),
-    agentId: Type.Optional(Type.String()),
+    agentId: Type.Optional(Type.String({ description: params.agentIdDescription })),
     model: Type.Optional(Type.String()),
     runTimeoutSeconds: Type.Optional(
       Type.Integer({
@@ -360,11 +362,19 @@ export function createSessionsSpawnTool(
     requesterAgentId,
     sandboxed: opts?.sandboxed,
   });
+  const agentIdDescription = describeSessionsSpawnAgentId({
+    cfg: effectiveConfig,
+    requesterAgentId,
+    agentSessionKey: opts?.agentSessionKey,
+    acpAvailable,
+    collectDefaultAgentId: swarmConfig.enabled ? swarmConfig.defaultAgentId : undefined,
+  });
   const parameters = createSessionsSpawnToolSchema({
     acpAvailable,
     threadAvailable,
     subagentThreadAvailable: threadAvailability.subagent,
     swarmEnabled: swarmConfig.enabled,
+    agentIdDescription,
   });
   const tool: AnyAgentTool = {
     label: "Sessions",
