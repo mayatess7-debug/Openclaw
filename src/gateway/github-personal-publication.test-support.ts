@@ -184,6 +184,7 @@ export async function callPersonalPublicationRpc(
   >,
   method: string,
   params: Record<string, unknown> = { sessionKey: SESSION_KEY },
+  hooks?: { duringPersonalStatus?: () => unknown },
 ) {
   const respond = vi.fn();
   const personal = createPersonalGitHubOAuthLifecycle();
@@ -197,7 +198,12 @@ export async function callPersonalPublicationRpc(
         githubOAuthService: {
           personal: {
             ...personal,
-            status: async (statusAction) => personalGitHubStatus(statusAction),
+            status: async (statusAction) => {
+              // Tests inject archive/restore interleavings here, inside the awaited
+              // options work that follows the request-start session snapshot.
+              await hooks?.duringPersonalStatus?.();
+              return personalGitHubStatus(statusAction);
+            },
           },
         } as GatewayRequestContext["githubOAuthService"],
       },
