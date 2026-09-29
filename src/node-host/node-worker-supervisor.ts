@@ -11,6 +11,10 @@ import {
   type WorkerLaunchDescriptor,
 } from "../worker/launch-descriptor.js";
 import {
+  assertNativeInferenceAssignment,
+  type NativeInferenceStartup,
+} from "../worker/native-inference-startup.js";
+import {
   nodeWorkerPlanHash,
   nodeWorkerTurnMatchesIdentity,
   validateNodeWorkerLaunchInput,
@@ -48,6 +52,10 @@ import {
   sendNodeWorkerInput,
   type NodeWorkerChildAdapter,
 } from "./node-worker-launch-transport.js";
+import {
+  nodeWorkerNativeInferenceSecrets,
+  snapshotNodeWorkerNativeInference,
+} from "./node-worker-native-inference.js";
 import {
   createNodeWorkerCredentialScrubber,
   sanitizeNodeWorkerDiagnostic,
@@ -97,6 +105,7 @@ class NodeWorkerSupervisor {
   private readonly admissions = new Map<string, NodeWorkerPendingAdmission>();
   private readonly retentions = new Set<Promise<NodeWorkerWorkspaceRetainResult>>();
   private readonly stoppingEnvironments = new Map<string, number>();
+  private readonly nativeInferenceStartup?: NativeInferenceStartup;
   private readonly workerEnv: NodeJS.ProcessEnv;
   private readonly engineEnv: NodeJS.ProcessEnv;
   private readonly capacity: NodeWorkerCapacity;
@@ -113,6 +122,10 @@ class NodeWorkerSupervisor {
 
   constructor(options: NodeWorkerSupervisorOptions = {}) {
     const env = options.env ?? process.env;
+    this.nativeInferenceStartup = snapshotNodeWorkerNativeInference(
+      options.nativeInferenceConfig,
+      env,
+    );
     this.bundleRoot = path.resolve(
       options.bundleRoot ?? path.join(resolveStateDir(env), "node-host"),
     );
@@ -377,6 +390,12 @@ class NodeWorkerSupervisor {
         signal.throwIfAborted();
         continue;
       }
+      if (descriptor.assignment.inference === "runtime-local") {
+        if (!this.nativeInferenceStartup) {
+          throw new Error("Node worker native inference requires node-local startup configuration");
+        }
+        assertNativeInferenceAssignment(this.nativeInferenceStartup, descriptor);
+      }
       return await this.startTurn(owner, descriptor, claimInput, signal, idleGeneration);
     }
     const claim = await this.capacity.claim(claimInput, supervisor, signal, () =>
@@ -449,7 +468,12 @@ class NodeWorkerSupervisor {
     signal?: AbortSignal;
     idleGeneration?: number;
   }): Promise<NodeWorkerLaunchReceipt> {
-    const sensitiveValues = nodeWorkerDescriptorSecrets(params.descriptor);
+    const sensitiveValues = [
+      ...nodeWorkerDescriptorSecrets(params.descriptor),
+      ...(params.descriptor.assignment.inference === "runtime-local" && this.nativeInferenceStartup
+        ? nodeWorkerNativeInferenceSecrets(this.nativeInferenceStartup)
+        : []),
+    ];
     const scrubber = createNodeWorkerCredentialScrubber(sensitiveValues);
     // Turn cancellation can beat the child's admission retry deadline. Retain the
     // producer's latest cause so the durable terminal receipt does not become generic.
@@ -474,6 +498,7 @@ class NodeWorkerSupervisor {
         bundleRoot: this.bundleRoot,
         workerEnv: params.workerEnv,
         engineEnv: this.engineEnv,
+        nativeInferenceStartup: this.nativeInferenceStartup,
         input: params.input,
         descriptor: params.descriptor,
         planHash: params.planHash,
@@ -662,7 +687,15 @@ class NodeWorkerSupervisor {
       registerSecretValueForRedaction(value);
     }
     // The IPC diagnostic handler shares this object, so rotate its contents rather than its owner.
-    Object.assign(active.scrubber, createNodeWorkerCredentialScrubber(secrets));
+    Object.assign(
+      active.scrubber,
+      createNodeWorkerCredentialScrubber([
+        ...secrets,
+        ...(descriptor.assignment.inference === "runtime-local" && this.nativeInferenceStartup
+          ? nodeWorkerNativeInferenceSecrets(this.nativeInferenceStartup)
+          : []),
+      ]),
+    );
     active.connectionFailure.errorText = undefined;
     const onAbort = () => {
       void this.cancelTurn(claim).catch(() => undefined);
