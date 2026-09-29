@@ -470,15 +470,49 @@ export class SessionManagerEntries extends SessionManagerSuffixPersistence {
         const anchor = this.persistenceTarget
           ? readActiveTranscriptEntryAnchor({ ...this.persistenceTarget, entryId: current.id })
           : undefined;
-        if (this.persistenceTarget && !anchor) {
-          throw new Error(`Session transcript anchor was not returned: ${current.id}`);
+        if (anchor) {
+          return {
+            entryId: current.id,
+            message: current.message,
+            anchor,
+            appended: false,
+          };
         }
-        return {
-          entryId: current.id,
-          message: current.message,
-          ...(anchor ? { anchor } : {}),
-          appended: false,
-        };
+        // A dirty projection (e.g. a side append awaiting reconcile) refuses the
+        // anchor read. That can also mean another writer moved the active branch
+        // while this manager retained the cached keyed user. Reload the canonical
+        // view and compare the current-turn ID before accepting an anchor-free
+        // dedup, so a displaced user is not reported as current. The adoption
+        // path performs the same reload check on its persisted result.
+        if (!this.persistenceTarget) {
+          return {
+            entryId: current.id,
+            message: current.message,
+            appended: false,
+          };
+        }
+        this.reloadPersistedTranscript();
+        const canonicalTurnId = this.resolveCurrentTurnEntryId();
+        const canonical = canonicalTurnId ? this.byId.get(canonicalTurnId) : undefined;
+        if (
+          canonical?.type === "message" &&
+          canonical.message.role === "user" &&
+          "idempotencyKey" in canonical.message &&
+          canonical.message.idempotencyKey === message.idempotencyKey
+        ) {
+          // Still the current turn after the reload: the side append only dirtied
+          // the projection. Degrade like readOmittedCustomMessage and the
+          // pre-persisted user turn path instead of throwing, so the caller can
+          // re-resolve on demand.
+          return {
+            entryId: canonical.id,
+            message: canonical.message,
+            appended: false,
+          };
+        }
+        // The cached keyed user is no longer the canonical current turn; fall
+        // through to the normal append path so the incoming message is not
+        // silently suppressed.
       }
     }
     const entry: SessionMessageEntry = {
