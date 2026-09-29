@@ -5,6 +5,7 @@ import * as cryptoDigest from "../infra/crypto-digest.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
   createPreparedModelCatalogWorkerInput,
+  filterCatalogWorkerExecArgv,
   fingerprintPreparedModelCatalogGeneration,
   fingerprintPreparedModelWorkerRequest,
 } from "./prepared-model-catalog-worker.js";
@@ -12,6 +13,22 @@ import type { PreparedModelRuntimeAgentFacts } from "./prepared-model-runtime.ca
 import { AuthStorage } from "./sessions/auth-storage.js";
 
 describe("prepared model catalog worker input", () => {
+  it("strips process-wide max-old-space-size flags from worker execArgv", () => {
+    expect(
+      filterCatalogWorkerExecArgv([
+        "--max-old-space-size=8001",
+        "--import",
+        "tsx/esm",
+        "--max_old_space_size=3072",
+        "--max-old-space-size",
+        "4096",
+        "--max_old_space_size",
+        "2048",
+        "--conditions=development",
+      ]),
+    ).toEqual(["--import", "tsx/esm", "--conditions=development"]);
+  });
+
   it("reuses captured config digests while workers independently reconstruct them", () => {
     const marker = "synthetic-worker-roster-boundary";
     const digests = vi.spyOn(cryptoDigest, "sha256Base64Url");
