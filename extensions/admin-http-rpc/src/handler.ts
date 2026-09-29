@@ -103,10 +103,9 @@ function statusForBodyErrorCode(code: RequestBodyLimitFailureCode): number {
       return 413;
     case "REQUEST_BODY_TIMEOUT":
       return 408;
-    case "CONNECTION_CLOSED":
+    default:
       return 400;
   }
-  return 400;
 }
 
 async function readAdminJsonBody(req: IncomingMessage): Promise<ReadJsonBodyResult> {
