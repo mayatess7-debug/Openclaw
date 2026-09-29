@@ -32,9 +32,15 @@ type HookContext = {
   sessionKey?: string;
   sessionId: string;
   workspaceDir: string;
+  /** Logical model provider reported to hooks (e.g. `anthropic`, not a CLI backend). */
+  modelProviderId?: string;
+  /** Caller-selected model id, so routers can compare the current selection. */
+  modelId?: string;
   messageProvider?: string;
   trigger?: string;
   channelId?: string;
+  /** Configured channel account; routing context, not requester identity. */
+  accountId?: string;
 };
 
 type HookRunnerLike = {
