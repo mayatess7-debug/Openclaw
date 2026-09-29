@@ -397,6 +397,11 @@ export async function sendSubagentAnnounceDirectly(
     };
     const classifyResponse = createDirectAnnounceResponseClassifier({
       params,
+      cfg,
+      requesterSessionKey: canonicalRequesterSessionKey,
+      requesterAgentId: params.requesterAgentId,
+      signal: params.signal,
+      timeoutMs: announceTimeoutMs,
       parentOnly,
       deliveryTarget,
       shouldDeliverAgentFinal,
@@ -521,6 +526,9 @@ export async function sendSubagentAnnounceDirectly(
 
     const classified = directFailure ?? classifyResponse(directAnnounceResponse);
     const delivery = classified instanceof Promise ? await classified : classified;
+    if (!isCompletionDeliveryAllowed()) {
+      return sourceOwnerChangedResult();
+    }
     const originalOutcome = buildAgentRunTerminalOutcomeFromWaitResult(
       asOptionalRecord(directAnnounceResponse),
     );
