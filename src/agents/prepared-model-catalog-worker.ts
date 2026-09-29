@@ -8,7 +8,10 @@ import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source
 import { resolveStateDir } from "../config/state-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
-import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import {
+  resolveRuntimeWorkerThreadExecArgv,
+  resolveRuntimeWorkerUrl,
+} from "../infra/runtime-worker-url.js";
 import { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
 import type { Model } from "../llm/types.js";
 import { resolveInstalledManifestRegistryIndexFingerprint } from "../plugins/manifest-registry-installed.js";
@@ -120,6 +123,19 @@ export const PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS = 180_000;
 const GATEWAY_CATALOG_WORKERS = 1;
 // Leave room for source loaders and overlapping generations without inheriting the host heap budget.
 const CATALOG_WORKER_HEAP_LIMIT_MB = 512;
+
+export function filterCatalogWorkerExecArgv(
+  execArgv: readonly string[] = process.execArgv,
+): string[] {
+  return execArgv.filter(
+    (arg, index, argv) =>
+      !arg.startsWith("--max-old-space-size") &&
+      !arg.startsWith("--max_old_space_size") &&
+      argv[index - 1] !== "--max-old-space-size" &&
+      argv[index - 1] !== "--max_old_space_size",
+  );
+}
+
 type CatalogPool = WorkerTaskPool<PreparedModelCatalogWorkerTask, PreparedModelWorkerResult>;
 type CatalogPoolBorrower = {
   agentDir: string;
@@ -159,9 +175,13 @@ function createCatalogPool(
   validateResult: (result: PreparedModelWorkerResult) => void,
   assertCurrent?: () => void,
 ): CatalogPool {
+  const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.preparedModelCatalog);
   return new WorkerTaskPool<PreparedModelCatalogWorkerTask, PreparedModelWorkerResult>({
-    workerUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.preparedModelCatalog),
-    workerOptions: { resourceLimits: { maxOldGenerationSizeMb: CATALOG_WORKER_HEAP_LIMIT_MB } },
+    workerUrl,
+    workerOptions: {
+      execArgv: filterCatalogWorkerExecArgv(resolveRuntimeWorkerThreadExecArgv(workerUrl)),
+      resourceLimits: { maxOldGenerationSizeMb: CATALOG_WORKER_HEAP_LIMIT_MB },
+    },
     maxWorkers: GATEWAY_CATALOG_WORKERS,
     // Only the inventory owner can replace captured code; idle retirement or crash restart
     // would import a different source generation into an existing publication.

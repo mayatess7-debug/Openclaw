@@ -384,11 +384,26 @@ export class WorkerTaskPoolCore<Input, Output> {
         };
       }
       const workerUrl = this.options.workerUrl;
-      const workerOptions = {
-        // Preserve native require(ESM) and its transitive import-only exports.
-        execArgv: resolveRuntimeWorkerThreadExecArgv(workerUrl),
+      const mergedOptions = {
         ...this.options.workerOptions,
         ...prepared?.options,
+      };
+      const baseExecArgv =
+        mergedOptions.execArgv ?? resolveRuntimeWorkerThreadExecArgv(workerUrl);
+      const workerOptions = {
+        // Preserve native require(ESM) and its transitive import-only exports, while
+        // stripping old-space heap flags when maxOldGenerationSizeMb is configured.
+        ...mergedOptions,
+        execArgv:
+          mergedOptions.resourceLimits?.maxOldGenerationSizeMb !== undefined
+            ? baseExecArgv.filter(
+                (arg, index, argv) =>
+                  !arg.startsWith("--max-old-space-size") &&
+                  !arg.startsWith("--max_old_space_size") &&
+                  argv[index - 1] !== "--max-old-space-size" &&
+                  argv[index - 1] !== "--max_old_space_size",
+              )
+            : baseExecArgv,
       };
       // Preparation and option getters can synchronously close the task.
       if (slot.retiring) {
